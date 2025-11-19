@@ -2,7 +2,7 @@
 
 Provide a description of the purpose of the module and any relevant information.
 
-## Model viam:ptz-target-tracker:pose-tracker
+## Model viam:ptz-target-tracker:component-tracker
 
 Provide a description of the model and any relevant information.
 
