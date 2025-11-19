@@ -170,6 +170,12 @@ func (s *poseTracker) DoCommand(ctx context.Context, cmd map[string]interface{})
 			return nil, fmt.Errorf("failed to get camera pose")
 		}
 		return map[string]interface{}{"status": "camera pose", "camera_pose": cameraPose}, nil
+	case "get-camera-current-ptz-status":
+		panTiltX, panTiltY, zoomX, err := s.getCameraCurrentPTZStatus(s.cancelCtx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get camera current PTZ status: %v", err)
+		}
+		return map[string]interface{}{"pan_tilt_x": panTiltX, "pan_tilt_y": panTiltY, "zoom_x": zoomX}, nil
 	default:
 		return nil, fmt.Errorf("invalid command: %v", cmd["command"])
 	}
