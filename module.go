@@ -139,14 +139,23 @@ func (s *poseTracker) DoCommand(ctx context.Context, cmd map[string]interface{})
 	case "stop":
 		s.cancelFunc()
 		return map[string]interface{}{"status": "stopped"}, nil
-	case "save-starting-pose":
-		startingPose, err := s.saveStartingPose(s.cancelCtx)
+	case "get-required-camera-to-target-orientation":
+		requiredCameraToTargetOrientation, err := s.getRequiredCameraToTargetOrientation(s.cancelCtx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to save starting pose: %v", err)
+			return nil, fmt.Errorf("failed to get required camera to target orientation: %v", err)
 		}
-		// Convert pose to readable format with orientation in degrees
-		poseDict := s.poseToDictDegrees(startingPose)
-		return map[string]interface{}{"status": "starting pose saved", "starting_pose": poseDict}, nil
+
+		requiredCameraToTargetOrientationDict := map[string]interface{}{
+			"type": "ov_degrees",
+			"value": map[string]interface{}{
+				"th": requiredCameraToTargetOrientation.Theta,
+				"x":  requiredCameraToTargetOrientation.OX,
+				"y":  requiredCameraToTargetOrientation.OY,
+				"z":  requiredCameraToTargetOrientation.OZ,
+			},
+		}
+
+		return map[string]interface{}{"status": "required camera to target orientation", "orientation": requiredCameraToTargetOrientationDict}, nil
 	case "get-target-pose-in-camera-frame":
 		targetPoseInCameraFrame := s.getTargetPoseInCameraFrame(s.cancelCtx)
 		if targetPoseInCameraFrame == nil {
@@ -216,7 +225,7 @@ Get PTZ status response:
 The using must point the PTZ camera at the target pose before saving the starting pose.
 This is needed to be able to link the PTZ angles to the orientation of the camera.
 */
-func (t *poseTracker) saveStartingPose(ctx context.Context) (spatialmath.Pose, error) {
+func (t *poseTracker) getRequiredCameraToTargetOrientation(ctx context.Context) (*spatialmath.OrientationVectorDegrees, error) {
 	fsc, err := t.robotClient.FrameSystemConfig(ctx)
 	if err != nil {
 		t.logger.Error("Failed to get frame system config: %v", err)
@@ -252,7 +261,8 @@ func (t *poseTracker) saveStartingPose(ctx context.Context) (spatialmath.Pose, e
 	newCameraPose := spatialmath.NewPose(cameraPose.Pose().Point(), ov)
 	t.logger.Infof("New camera pose: %+v", newCameraPose)
 
-	return newCameraPose, nil
+	orientation := newCameraPose.Orientation().OrientationVectorDegrees()
+	return orientation, nil
 }
 
 func (t *poseTracker) alignCameraToTarget(ctx context.Context, targetPoseInCameraFrame *referenceframe.PoseInFrame, cameraPose *referenceframe.PoseInFrame) (*spatialmath.OrientationVector, error) {
