@@ -38,6 +38,9 @@ type Config struct {
 	OnvifPTZClientName  string  `json:"onvif_ptz_client_name"`
 	UpdateRateHz        float64 `json:"update_rate_hz"`
 	EnableOnStart       bool    `json:"enable_on_start"`
+	PanSpeed            float64 `json:"pan_speed"`
+	TiltSpeed           float64 `json:"tilt_speed"`
+	ZoomSpeed           float64 `json:"zoom_speed"`
 }
 
 // Validate ensures all parts of the config are valid and important fields exist.
@@ -58,6 +61,15 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if cfg.UpdateRateHz <= 0 {
 		return nil, nil, errors.New("update_rate_hz must be greater than 0")
 	}
+	if cfg.PanSpeed <= 0 || cfg.PanSpeed > 1 {
+		return nil, nil, errors.New("pan_speed must be greater than 0 and less than or equal to 1")
+	}
+	if cfg.TiltSpeed <= 0 || cfg.TiltSpeed > 1 {
+		return nil, nil, errors.New("tilt_speed must be greater than 0 and less than or equal to 1")
+	}
+	if cfg.ZoomSpeed <= 0 || cfg.ZoomSpeed > 1 {
+		return nil, nil, errors.New("zoom_speed must be greater than 0 and less than or equal to 1")
+	}
 	return nil, nil, nil
 }
 
@@ -71,6 +83,7 @@ type poseTracker struct {
 
 	cancelCtx  context.Context
 	cancelFunc func()
+	running    bool
 
 	robotClient         robot.Robot
 	targetComponentName string
@@ -81,6 +94,10 @@ type poseTracker struct {
 	baselineZoomX             float64
 	baselineCameraOrientation *spatialmath.OrientationVectorDegrees
 	baselineDirection         r3.Vector // World direction at calibration
+	panSpeed                  float64
+	tiltSpeed                 float64
+	zoomSpeed                 float64
+	updateRateHz              float64
 
 	// Fixed camera position
 	cameraPosition r3.Vector // e.g., (1600, 0, -600)
@@ -93,8 +110,30 @@ func (s *poseTracker) Close(ctx context.Context) error {
 
 // Reconfigure implements resource.Resource.
 // Subtle: this method shadows the method (AlwaysRebuild).Reconfigure of poseTracker.AlwaysRebuild.
-func (s *poseTracker) Reconfigure(ctx context.Context, deps resource.Dependencies, conf resource.Config) error {
-	panic("unimplemented")
+func (s *poseTracker) Reconfigure(ctx context.Context, deps resource.Dependencies, rawConf resource.Config) error {
+	conf, err := resource.NativeConfig[*Config](rawConf)
+	if err != nil {
+		return err
+	}
+
+	s.logger.Infof("Reconfiguring pose tracker with pan speed: %f, tilt speed: %f, zoom speed: %f", conf.PanSpeed, conf.TiltSpeed, conf.ZoomSpeed)
+	wasRunning := s.running
+	if s.running {
+		s.cancelFunc()
+		s.running = false
+	}
+	s.targetComponentName = conf.TargetComponentName
+	s.onvifPTZClientName = conf.OnvifPTZClientName
+	s.updateRateHz = conf.UpdateRateHz
+	s.panSpeed = conf.PanSpeed
+	s.tiltSpeed = conf.TiltSpeed
+	s.zoomSpeed = conf.ZoomSpeed
+	if wasRunning {
+		go s.trackingLoop(s.cancelCtx)
+		s.logger.Info("PTZ pose tracker restarted")
+		s.running = true
+	}
+	return nil
 }
 
 func newPoseTracker(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (resource.Resource, error) {
@@ -125,6 +164,10 @@ func NewPoseTracker(ctx context.Context, deps resource.Dependencies, name resour
 		robotClient:         robotClient,
 		targetComponentName: conf.TargetComponentName,
 		onvifPTZClientName:  conf.OnvifPTZClientName,
+		panSpeed:            conf.PanSpeed,
+		tiltSpeed:           conf.TiltSpeed,
+		zoomSpeed:           conf.ZoomSpeed,
+		updateRateHz:        conf.UpdateRateHz,
 	}
 
 	if conf.EnableOnStart {
@@ -144,9 +187,11 @@ func (t *poseTracker) DoCommand(ctx context.Context, cmd map[string]interface{})
 	switch cmd["command"] {
 	case "start":
 		go t.trackingLoop(t.cancelCtx)
+		t.running = true
 		return map[string]interface{}{"status": "running"}, nil
 	case "stop":
 		t.cancelFunc()
+		t.running = false
 		return map[string]interface{}{"status": "stopped"}, nil
 	case "calibrate":
 		err := t.recordBaseline(t.cancelCtx)
@@ -407,6 +452,9 @@ func (t *poseTracker) sendAbsoluteMove(ctx context.Context, pan float64, tilt fl
 		"pan_position":  pan,
 		"tilt_position": tilt,
 		"zoom_position": zoom,
+		"pan_speed":     t.panSpeed,
+		"tilt_speed":    t.tiltSpeed,
+		"zoom_speed":    t.zoomSpeed,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to send absolute move: %w", err)
