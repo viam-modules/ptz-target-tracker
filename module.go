@@ -148,44 +148,7 @@ func (t *poseTracker) DoCommand(ctx context.Context, cmd map[string]interface{})
 	case "stop":
 		t.cancelFunc()
 		return map[string]interface{}{"status": "stopped"}, nil
-	case "get-required-camera-to-target-orientation":
-		requiredCameraToTargetOrientation, err := t.getRequiredCameraToTargetOrientation(t.cancelCtx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get required camera to target orientation: %v", err)
-		}
-
-		requiredCameraToTargetOrientationDict := map[string]interface{}{
-			"type": "ov_degrees",
-			"value": map[string]interface{}{
-				"th": requiredCameraToTargetOrientation.Theta,
-				"x":  requiredCameraToTargetOrientation.OX,
-				"y":  requiredCameraToTargetOrientation.OY,
-				"z":  requiredCameraToTargetOrientation.OZ,
-			},
-		}
-
-		return map[string]interface{}{"status": "required camera to target orientation", "orientation": requiredCameraToTargetOrientationDict}, nil
-	case "get-target-pose-in-camera-frame":
-		targetPoseInCameraFrame := t.getTargetPoseInCameraFrame(t.cancelCtx)
-		if targetPoseInCameraFrame == nil {
-			return nil, fmt.Errorf("failed to get target pose in camera frame")
-		}
-		t.logger.Infof("Target pose in camera frame: %+v", targetPoseInCameraFrame.Pose())
-		targetPoseInCameraFrameDegrees := t.poseToDictDegrees(targetPoseInCameraFrame.Pose())
-		return map[string]interface{}{"status": "target pose in camera frame", "target_pose_in_camera_frame": targetPoseInCameraFrameDegrees}, nil
-	case "get-camera-pose":
-		cameraPose := t.getCameraPose(t.cancelCtx)
-		if cameraPose == nil {
-			return nil, fmt.Errorf("failed to get camera pose")
-		}
-		return map[string]interface{}{"status": "camera pose", "camera_pose": cameraPose}, nil
-	case "get-camera-current-ptz-status":
-		panTiltX, panTiltY, zoomX, err := t.getCameraCurrentPTZStatus(t.cancelCtx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get camera current PTZ status: %v", err)
-		}
-		return map[string]interface{}{"pan_tilt_x": panTiltX, "pan_tilt_y": panTiltY, "zoom_x": zoomX}, nil
-	case "save-baseline-camera-ptz-and-orientation":
+	case "calibrate":
 		err := t.recordBaseline(t.cancelCtx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to record baseline: %v", err)
@@ -237,185 +200,6 @@ func (t *poseTracker) recordBaseline(ctx context.Context) error {
 	return nil
 }
 
-// poseToDictDegrees converts a spatialmath.Pose to a dictionary with orientation in degrees
-func (s *poseTracker) poseToDictDegrees(pose spatialmath.Pose) map[string]interface{} {
-	point := pose.Point()
-	ov := pose.Orientation().OrientationVectorDegrees()
-
-	return map[string]interface{}{
-		"translation": map[string]interface{}{
-			"x": point.X,
-			"y": point.Y,
-			"z": point.Z,
-		},
-		"orientation": map[string]interface{}{
-			"type": "ov_degrees",
-			"value": map[string]interface{}{
-				"th": ov.Theta,
-				"x":  ov.OX,
-				"y":  ov.OY,
-				"z":  ov.OZ,
-			},
-		},
-		"parent": "world",
-	}
-}
-
-/*
-Get PTZ status response:
-
-{
-  "move_status": {
-    "pan_tilt": "IDLE",
-    "zoom": "IDLE"
-  },
-  "utc_time": "2025-11-19T15:44:53Z",
-  "position": {
-    "zoom": {
-      "x": 0.5,
-      "space": "http://www.onvif.org/ver10/tptz/ZoomSpaces/PositionGenericSpace"
-    },
-    "pan_tilt": {
-      "space": "http://www.onvif.org/ver10/tptz/PanTiltSpaces/PositionGenericSpace",
-      "x": 0,
-      "y": 0
-    }
-  }
-}
-*/
-/*
-The using must point the PTZ camera at the target pose before saving the starting pose.
-This is needed to be able to link the PTZ angles to the orientation of the camera.
-*/
-func (t *poseTracker) getRequiredCameraToTargetOrientation(ctx context.Context) (*spatialmath.OrientationVectorDegrees, error) {
-	fsc, err := t.robotClient.FrameSystemConfig(ctx)
-	if err != nil {
-		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil, errors.New("failed to get frame system config")
-	}
-	targetPose := t.getTargetPose(ctx)
-	if targetPose == nil {
-		t.logger.Errorf("Failed to get target pose")
-		return nil, errors.New("failed to get target pose")
-	}
-	t.logger.Infof("Starting target pose: %+v", targetPose)
-
-	cameraPose := t.getCameraPose(ctx)
-	if cameraPose == nil {
-		t.logger.Errorf("Failed to get camera pose")
-		return nil, errors.New("failed to get camera pose")
-	}
-	t.logger.Infof("Camera pose: %+v", cameraPose)
-
-	ov, err := t.alignCameraToTarget(ctx, targetPose, cameraPose)
-	if err != nil {
-		t.logger.Errorf("Failed to align camera to target: %v", err)
-		return nil, errors.New("failed to align camera to target")
-	}
-	t.logger.Infof("Required Camera orientation: %+v", ov)
-
-	// Now, we need to set the camera pose to the required orientation
-	cameraFramePart := touch.FindPart(fsc, t.cfg.PTZCameraName)
-	if cameraFramePart == nil {
-		t.logger.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-		return nil, fmt.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-	}
-	newCameraPose := spatialmath.NewPose(cameraPose.Pose().Point(), ov)
-	t.logger.Infof("New camera pose: %+v", newCameraPose)
-
-	orientation := newCameraPose.Orientation().OrientationVectorDegrees()
-	return orientation, nil
-}
-
-func (t *poseTracker) alignCameraToTarget(ctx context.Context, targetPoseInCameraFrame *referenceframe.PoseInFrame, cameraPose *referenceframe.PoseInFrame) (*spatialmath.OrientationVector, error) {
-	t.logger.Infof("Aligning camera to target")
-	t.logger.Infof("Target pose in camera frame: %+v", targetPoseInCameraFrame)
-	t.logger.Infof("Camera pose: %+v", cameraPose)
-	// OK, We know we have the target component in the center of the camera frame, and we have the camera pose, now we need to calculat the transformation such that the camera's Z axis is aligned with the target's Z axis points towards the target.
-	// This means that I want the target pose in camera frame to be such that its orienation is {ox:0, oy:0, oz:1}
-
-	targetPose := t.getTargetPose(ctx)
-	if targetPose == nil {
-		t.logger.Errorf("Failed to get target pose")
-		return nil, errors.New("failed to get target pose")
-	}
-	t.logger.Infof("Target pose: %+v", targetPose)
-
-	targetPosition := targetPose.Pose().Point()
-	t.logger.Infof("Target position: %+v", targetPosition)
-
-	cameraPosition := cameraPose.Pose().Point()
-	t.logger.Infof("Camera position: %+v", cameraPosition)
-
-	// Now, we need to calculate the orientation of the camera such that its Z axis points towards the target position.
-	// This means that I want the camera pose to be such that its orientation is {ox:0, oy:0, oz:1}
-
-	direction := r3.Vector{
-		X: targetPosition.X - cameraPosition.X,
-		Y: targetPosition.Y - cameraPosition.Y,
-		Z: targetPosition.Z - cameraPosition.Z,
-	}
-	direction = direction.Mul(1.0 / direction.Norm())
-
-	t.logger.Infof("Direction to target: (%f, %f, %f)", direction.X, direction.Y, direction.Z)
-
-	// Build a rotation matrix where +Z points at target
-	// newZ = direction (this will be camera's +Z in world coords)
-	newZ := direction
-
-	// Choose newX perpendicular to newZ
-	// Use world Z-axis to define the "up" direction
-	worldUp := r3.Vector{X: 0, Y: 0, Z: 1}
-	newX := newZ.Cross(worldUp)
-
-	// Handle case where newZ is parallel to world up
-	if newX.Norm() < 1e-6 {
-		// Direction is straight up or down, choose arbitrary X
-		newX = r3.Vector{X: 1, Y: 0, Z: 0}
-	} else {
-		newX = newX.Mul(1.0 / newX.Norm())
-	}
-
-	// newY completes right-handed coordinate system
-	newY := newZ.Cross(newX)
-
-	// Create rotation matrix with these basis vectors as COLUMNS
-	// R = [newX | newY | newZ]
-	mat := []float64{
-		newX.X, newX.Y, newX.Z, // Row 1: newX
-		newY.X, newY.Y, newY.Z, // Row 2: newY
-		newZ.X, newZ.Y, newZ.Z, // Row 3: newZ
-	}
-	// Convert to orientation vector
-	rotmat, _ := spatialmath.NewRotationMatrix(mat)
-	ov := rotmat.OrientationVectorDegrees()
-
-	t.logger.Infof("Orientation vector: axis=(%f, %f, %f), angle=%f°",
-		ov.OX, ov.OY, ov.OZ, ov.Theta)
-
-	return (*spatialmath.OrientationVector)(ov.OrientationVectorDegrees()), nil
-}
-
-func (t *poseTracker) getCameraPose(ctx context.Context) *referenceframe.PoseInFrame {
-	fsc, err := t.robotClient.FrameSystemConfig(ctx)
-	if err != nil {
-		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil
-	}
-	cameraFramePart := touch.FindPart(fsc, t.cfg.PTZCameraName)
-	if cameraFramePart == nil {
-		t.logger.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-		return nil
-	}
-	cameraPose, err := t.robotClient.GetPose(ctx, cameraFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
-	if err != nil {
-		t.logger.Errorf("Failed to get pose: %v", err)
-		return nil
-	}
-	t.logger.Infof("Camera pose: %+v", cameraPose)
-	return cameraPose
-}
-
 func (t *poseTracker) getTargetPose(ctx context.Context) *referenceframe.PoseInFrame {
 	fsc, err := t.robotClient.FrameSystemConfig(ctx)
 	if err != nil {
@@ -434,37 +218,6 @@ func (t *poseTracker) getTargetPose(ctx context.Context) *referenceframe.PoseInF
 	}
 
 	return targetPose
-}
-
-func (t *poseTracker) getTargetPoseInCameraFrame(ctx context.Context) *referenceframe.PoseInFrame {
-	fsc, err := t.robotClient.FrameSystemConfig(ctx)
-	if err != nil {
-		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil
-	}
-	targetFramePart := touch.FindPart(fsc, t.targetComponentName)
-	if targetFramePart == nil {
-		t.logger.Errorf("can't find frame for %v", t.targetComponentName)
-		return nil
-	}
-	targetPose, err := t.robotClient.GetPose(ctx, targetFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
-	if err != nil {
-		t.logger.Errorf("Failed to get pose: %v", err)
-		return nil
-	}
-	cameraFramePart := touch.FindPart(fsc, t.cfg.PTZCameraName)
-	if cameraFramePart == nil {
-		t.logger.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-		return nil
-	}
-	targetPoseInCameraFrame, err := t.robotClient.TransformPose(ctx, targetPose, cameraFramePart.FrameConfig.Name(), []*referenceframe.LinkInFrame{})
-	if err != nil {
-		t.logger.Errorf("Failed to transform target pose to camera frame: %v", err)
-		return nil
-	}
-	t.logger.Infof("Target pose in camera frame: %+v", targetPoseInCameraFrame)
-
-	return targetPoseInCameraFrame
 }
 
 func (t *poseTracker) getCameraCurrentPTZStatus(ctx context.Context) (float64, float64, float64, error) {
@@ -552,7 +305,6 @@ func (t *poseTracker) trackingLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// 1. Get the target pose in the frame system
 			err := t.trackTarget(ctx)
 			if err != nil {
 				t.logger.Errorf("Failed to track target: %v", err)
