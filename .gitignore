@@ -1,2 +1,7 @@
 module.tar.gz
 bin/*
+
+# Environment files - ignore all .env files except .example files
+.env
+.env.*
+!.env*.example

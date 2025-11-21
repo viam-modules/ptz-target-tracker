@@ -3,30 +3,59 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"math"
+	"os"
 
+	"github.com/erh/vmodutils/touch"
 	"github.com/golang/geo/r3"
-	"go.viam.com/rdk/components/arm"
+	"github.com/joho/godotenv"
 	"go.viam.com/rdk/logging"
+	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/robot/client"
 	"go.viam.com/utils/rpc"
 	"gonum.org/v1/gonum/mat"
 )
 
-func calculateCameraPosition() {
+func calculateCameraPosition(envFile string) {
+	// Load .env file
+	if envFile != "" {
+		if err := godotenv.Load(envFile); err != nil {
+			fmt.Printf("Error loading %s: %v\n", envFile, err)
+			fmt.Println("Using system environment variables instead")
+		} else {
+			fmt.Printf("✅ Loaded environment from: %s\n", envFile)
+		}
+	} else {
+		// Try to load default .env file
+		if err := godotenv.Load(); err != nil {
+			fmt.Println("Warning: .env file not found, using system environment variables")
+		} else {
+			fmt.Println("✅ Loaded environment from: .env")
+		}
+	}
+
 	logger := logging.NewDebugLogger("client")
+
+	// Get credentials from environment
+	robotAddress := os.Getenv("VIAM_ROBOT_ADDRESS")
+	apiKeyID := os.Getenv("VIAM_API_KEY_ID")
+	apiKey := os.Getenv("VIAM_API_KEY")
+
+	if robotAddress == "" || apiKeyID == "" || apiKey == "" {
+		logger.Fatal("Missing required environment variables: VIAM_ROBOT_ADDRESS, VIAM_API_KEY_ID, VIAM_API_KEY")
+	}
+
 	machine, err := client.New(
 		context.Background(),
-		"not-sanding-ur5e-main.2uzcyfshpx.viam.cloud",
+		robotAddress,
 		logger,
 		client.WithDialOptions(rpc.WithEntityCredentials(
-
-			"4ede1597-5713-4887-92df-1dec6017c747",
+			apiKeyID,
 			rpc.Credentials{
-				Type: rpc.CredentialsTypeAPIKey,
-
-				Payload: "t8k15nz04js9r8h1jwdkgvvy7l06379l",
+				Type:    rpc.CredentialsTypeAPIKey,
+				Payload: apiKey,
 			})),
 	)
 	if err != nil {
@@ -37,27 +66,26 @@ func calculateCameraPosition() {
 	logger.Info("Resources:")
 	logger.Info(machine.ResourceNames())
 
-	// ur5e
-	ur5E, err := arm.FromRobot(machine, "ur5e")
-	if err != nil {
-		logger.Error(err)
-		return
+	// Get target component name from environment (default to "sander")
+	targetComponentName := os.Getenv("TARGET_COMPONENT_NAME")
+	if targetComponentName == "" {
+		targetComponentName = "sander"
 	}
 
 	// LINE 1: Center of camera frame
 	fmt.Println("=== LINE 1: Center of frame ===")
 	line1Points := []r3.Vector{}
 	for i := 0; i < 3; i++ {
-		fmt.Printf("Move sander to CENTER of camera frame (position %d/3), then press Enter\n", i+1)
+		fmt.Printf("Move %s to CENTER of camera frame (position %d/3), then press Enter\n", targetComponentName, i+1)
 		fmt.Scanln()
 
-		targetPose, err := ur5E.EndPosition(context.Background(), map[string]interface{}{})
-		if err != nil {
+		targetPose := getTargetPose(context.Background(), machine, targetComponentName)
+		if targetPose == nil {
 			logger.Error(err)
 			return
 		}
 		logger.Infof("target EndPosition return value: %+v", targetPose)
-		pos := targetPose.Point()
+		pos := targetPose.Pose().Point()
 		line1Points = append(line1Points, pos)
 		logger.Infof("Line 1, Point %d: (%f, %f, %f)", i+1, pos.X, pos.Y, pos.Z)
 	}
@@ -66,16 +94,16 @@ func calculateCameraPosition() {
 	fmt.Println("\n=== LINE 2: Same location in frame (e.g., top-left) ===")
 	line2Points := []r3.Vector{}
 	for i := 0; i < 3; i++ {
-		fmt.Printf("Move sander to TOP-LEFT of camera frame (position %d/3), then press Enter\n", i+1)
+		fmt.Printf("Move %s to TOP-LEFT of camera frame (position %d/3), then press Enter\n", targetComponentName, i+1)
 		fmt.Scanln()
 
-		targetPose, err := ur5E.EndPosition(context.Background(), map[string]interface{}{})
-		if err != nil {
+		targetPose := getTargetPose(context.Background(), machine, targetComponentName)
+		if targetPose == nil {
 			logger.Error(err)
 			return
 		}
 		logger.Infof("target EndPosition return value: %+v", targetPose)
-		pos := targetPose.Point()
+		pos := targetPose.Pose().Point()
 		line2Points = append(line2Points, pos)
 		logger.Infof("Line 2, Point %d: (%f, %f, %f)", i+1, pos.X, pos.Y, pos.Z)
 	}
@@ -102,8 +130,6 @@ func calculateCameraPosition() {
 	if distance > 50.0 { // 50mm tolerance
 		logger.Warn("Lines don't intersect well - check measurements!")
 	}
-
-	return
 }
 
 // Find closest point between two 3D lines (handles skew lines)
@@ -227,6 +253,30 @@ func fitLine3D(points []r3.Vector) (point r3.Vector, direction r3.Vector) {
 	return point, direction
 }
 
+func getTargetPose(ctx context.Context, robotClient *client.RobotClient, targetComponentName string) *referenceframe.PoseInFrame {
+	fsc, err := robotClient.FrameSystemConfig(ctx)
+	if err != nil {
+		fmt.Printf("Failed to get frame system config: %v", err.Error())
+		return nil
+	}
+	targetFramePart := touch.FindPart(fsc, targetComponentName)
+	if targetFramePart == nil {
+		fmt.Println("can't find frame for", targetComponentName)
+		return nil
+	}
+	targetPose, err := robotClient.GetPose(ctx, targetFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
+	if err != nil {
+		fmt.Printf("Failed to get pose: %v", err.Error())
+		return nil
+	}
+
+	return targetPose
+}
+
 func main() {
-	calculateCameraPosition()
+	// Parse command-line flags
+	envFile := flag.String("env", "", "Path to .env file (e.g., .env.robot1)")
+	flag.Parse()
+
+	calculateCameraPosition(*envFile)
 }
