@@ -41,6 +41,10 @@ type Config struct {
 	PanSpeed            float64 `json:"pan_speed"`
 	TiltSpeed           float64 `json:"tilt_speed"`
 	ZoomSpeed           float64 `json:"zoom_speed"`
+	PanMinDeg           float64 `json:"pan_min_deg"`
+	PanMaxDeg           float64 `json:"pan_max_deg"`
+	TiltMinDeg          float64 `json:"tilt_min_deg"`
+	TiltMaxDeg          float64 `json:"tilt_max_deg"`
 }
 
 // Validate ensures all parts of the config are valid and important fields exist.
@@ -70,6 +74,20 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if cfg.ZoomSpeed <= 0 || cfg.ZoomSpeed > 1 {
 		return nil, nil, errors.New("zoom_speed must be greater than 0 and less than or equal to 1")
 	}
+	if cfg.PanMinDeg == 0 && cfg.PanMaxDeg == 0 {
+		cfg.PanMinDeg = 0
+		cfg.PanMaxDeg = 355
+	}
+	if cfg.TiltMinDeg == 0 && cfg.TiltMaxDeg == 0 {
+		cfg.TiltMinDeg = 5
+		cfg.TiltMaxDeg = 90
+	}
+	if cfg.PanMaxDeg <= cfg.PanMinDeg {
+		return nil, nil, errors.New("pan_max_deg must be greater than pan_min_deg")
+	}
+	if cfg.TiltMaxDeg <= cfg.TiltMinDeg {
+		return nil, nil, errors.New("tilt_max_deg must be greater than tilt_min_deg")
+	}
 	return nil, nil, nil
 }
 
@@ -98,6 +116,10 @@ type componentTracker struct {
 	tiltSpeed                 float64
 	zoomSpeed                 float64
 	updateRateHz              float64
+	panMinDeg                 float64
+	panMaxDeg                 float64
+	tiltMinDeg                float64
+	tiltMaxDeg                float64
 
 	// Fixed camera position
 	cameraPosition r3.Vector // e.g., (1600, 0, -600)
@@ -128,6 +150,10 @@ func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Depend
 	s.panSpeed = conf.PanSpeed
 	s.tiltSpeed = conf.TiltSpeed
 	s.zoomSpeed = conf.ZoomSpeed
+	s.panMinDeg = conf.PanMinDeg
+	s.panMaxDeg = conf.PanMaxDeg
+	s.tiltMinDeg = conf.TiltMinDeg
+	s.tiltMaxDeg = conf.TiltMaxDeg
 	if wasRunning {
 		go s.trackingLoop(s.cancelCtx)
 		s.logger.Info("PTZ pose tracker restarted")
@@ -168,6 +194,10 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 		tiltSpeed:           conf.TiltSpeed,
 		zoomSpeed:           conf.ZoomSpeed,
 		updateRateHz:        conf.UpdateRateHz,
+		panMinDeg:           conf.PanMinDeg,
+		panMaxDeg:           conf.PanMaxDeg,
+		tiltMinDeg:          conf.TiltMinDeg,
+		tiltMaxDeg:          conf.TiltMaxDeg,
 	}
 
 	if conf.EnableOnStart {
@@ -186,13 +216,33 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 	t.logger.Infof("DoCommand: %+v", cmd)
 	switch cmd["command"] {
 	case "start":
-		go t.trackingLoop(t.cancelCtx)
+		if t.running {
+			return map[string]interface{}{"status": "already_running"}, nil
+		}
+		// Cancel old context and create new one for fresh start
+		if t.cancelFunc != nil {
+			t.cancelFunc()
+		}
+		t.cancelCtx, t.cancelFunc = context.WithCancel(context.Background())
 		t.running = true
+		go t.trackingLoop(t.cancelCtx)
 		return map[string]interface{}{"status": "running"}, nil
 	case "stop":
-		t.cancelFunc()
+		if !t.running {
+			return map[string]interface{}{"status": "already_stopped"}, nil
+		}
 		t.running = false
+		if t.cancelFunc != nil {
+			t.cancelFunc() // Cancel context to exit the loop
+		}
 		return map[string]interface{}{"status": "stopped"}, nil
+	case "set-zoom":
+		zoom, ok := cmd["zoom"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("zoom is not a float")
+		}
+		t.baselineZoomX = zoom
+		return map[string]interface{}{"status": "success", "zoom": t.baselineZoomX}, nil
 	case "calibrate":
 		err := t.recordBaseline(t.cancelCtx)
 		if err != nil {
@@ -350,6 +400,9 @@ func (t *componentTracker) trackingLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !t.running {
+				continue
+			}
 			err := t.trackTarget(ctx)
 			if err != nil {
 				t.logger.Errorf("Failed to track target: %v", err)
@@ -381,7 +434,7 @@ func (t *componentTracker) trackTarget(ctx context.Context) error {
 	pan, tilt := t.directionToPanTilt(currentDirection)
 	zoom := t.baselineZoomX
 
-	t.logger.Debugf("Tracking: distance=%f, pan=%f, tilt=%f", distance, pan, tilt)
+	t.logger.Debugf("Tracking: distance=%f, pan=%f, tilt=%f, zoom=%f", distance, pan, tilt, zoom)
 
 	// 4. Send absolute move command
 	return t.sendAbsoluteMove(ctx, pan, tilt, zoom)
@@ -410,35 +463,91 @@ func (t *componentTracker) directionToPanTilt(direction r3.Vector) (pan, tilt fl
 
 	var panOffset float64
 	if baselineHorizNorm > 1e-6 && currentHorizNorm > 1e-6 {
+		// Normalize the vectors, now we are operating in the unit circle
 		baselineHorizontal = baselineHorizontal.Mul(1.0 / baselineHorizNorm)
 		currentHorizontal = currentHorizontal.Mul(1.0 / currentHorizNorm)
 
-		// Calculate angle between horizontal projections
-		// Use atan2 for signed angle
+		// crossZ gives the sign of the angle between the two vectors (positive if current is counter-clockwise of baseline)
 		crossZ := baselineHorizontal.X*currentHorizontal.Y - baselineHorizontal.Y*currentHorizontal.X
+		// dot gives the cosine of the angle between the two vectors
 		dot := baselineHorizontal.Dot(currentHorizontal)
+		// Atan2 returns the angle between the two vectors in the range [-π, π]
 		panOffset = math.Atan2(crossZ, dot)
 	}
 
 	// Vertical angle (tilt): elevation difference
-	baselineElevation := math.Asin(t.baselineDirection.Z)
-	currentElevation := math.Asin(direction.Z)
+	baselineElevation := math.Asin(clampMinusOneToOne(t.baselineDirection.Z))
+	currentElevation := math.Asin(clampMinusOneToOne(direction.Z))
 	tiltOffset := currentElevation - baselineElevation
 
-	// Convert offsets to normalized coordinates
-	// Assuming ±180° pan range and ±90° tilt range
-	panNorm := panOffset / math.Pi         // radians to [-1, 1]
-	tiltNorm := tiltOffset / (math.Pi / 2) // radians to [-1, 1]
+	panMinDeg := t.panMinDeg
+	panMaxDeg := t.panMaxDeg
+	if panMaxDeg <= panMinDeg {
+		panMinDeg = 0
+		panMaxDeg = 355
+	}
 
-	// Subtract from baseline
-	pan = t.baselinePan - panNorm
-	tilt = t.baselineTilt - tiltNorm
+	tiltMinDeg := t.tiltMinDeg
+	tiltMaxDeg := t.tiltMaxDeg
+	if tiltMaxDeg <= tiltMinDeg {
+		tiltMinDeg = 5
+		tiltMaxDeg = 90
+	}
 
-	// Clamp to valid range
-	pan = math.Max(-1.0, math.Min(1.0, pan))
-	tilt = math.Max(-1.0, math.Min(1.0, tilt))
+	panOffsetDeg := radToDeg(panOffset)
+	tiltOffsetDeg := radToDeg(tiltOffset)
+
+	baselinePanDeg := normalizedToDegrees(t.baselinePan, panMinDeg, panMaxDeg)
+	baselineTiltDeg := normalizedToDegrees(t.baselineTilt, tiltMinDeg, tiltMaxDeg)
+
+	// Apply offsets in degree space so we respect the asymmetric limits.
+	panDeg := baselinePanDeg - panOffsetDeg
+	tiltDeg := baselineTiltDeg - tiltOffsetDeg
+
+	panDeg = clampFloat(panDeg, panMinDeg, panMaxDeg)
+	tiltDeg = clampFloat(tiltDeg, tiltMinDeg, tiltMaxDeg)
+
+	// Convert back to the normalized [-1, 1] range that ONVIF expects.
+	pan = degreesToNormalized(panDeg, panMinDeg, panMaxDeg)
+	tilt = degreesToNormalized(tiltDeg, tiltMinDeg, tiltMaxDeg)
+
+	// Final safety clamp to ONVIF normalized limits.
+	pan = clampFloat(pan, -1.0, 1.0)
+	tilt = clampFloat(tilt, -1.0, 1.0)
+
+	if math.IsNaN(pan) || math.IsNaN(tilt) {
+		t.logger.Errorf("directionToPanTilt produced NaN (pan=%v, tilt=%v) baselinePan=%f baselineTilt=%f panDeg=%f tiltDeg=%f offsets=(%f,%f) ranges pan[%f,%f] tilt[%f,%f]",
+			pan, tilt, t.baselinePan, t.baselineTilt, panDeg, tiltDeg, panOffsetDeg, tiltOffsetDeg, panMinDeg, panMaxDeg, tiltMinDeg, tiltMaxDeg)
+		return t.baselinePan, t.baselineTilt
+	}
 
 	return pan, tilt
+}
+
+func normalizedToDegrees(norm, minDeg, maxDeg float64) float64 {
+	return minDeg + ((norm+1)/2)*(maxDeg-minDeg)
+}
+
+func degreesToNormalized(deg, minDeg, maxDeg float64) float64 {
+	return ((deg - minDeg) / (maxDeg - minDeg) * 2) - 1
+}
+
+func radToDeg(rad float64) float64 {
+	return rad * 180 / math.Pi
+}
+
+func clampFloat(val, minVal, maxVal float64) float64 {
+	return math.Max(minVal, math.Min(maxVal, val))
+}
+
+func clampMinusOneToOne(val float64) float64 {
+	if val > 1 {
+		return 1
+	}
+	if val < -1 {
+		return -1
+	}
+	return val
 }
 
 func (t *componentTracker) sendAbsoluteMove(ctx context.Context, pan float64, tilt float64, zoom float64) error {
