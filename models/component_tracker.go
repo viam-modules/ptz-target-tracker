@@ -16,6 +16,7 @@ import (
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/robot"
 	genericservice "go.viam.com/rdk/services/generic"
+	"gonum.org/v1/gonum/mat"
 )
 
 var (
@@ -90,6 +91,12 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	return nil, nil, nil
 }
 
+type TrackingSample struct {
+	TargetPos r3.Vector
+	Pan       float64
+	Tilt      float64
+}
+
 type componentTracker struct {
 	resource.AlwaysRebuild
 
@@ -120,6 +127,17 @@ type componentTracker struct {
 	tiltMinDeg             float64
 	tiltMaxDeg             float64
 	reversePan             bool
+	samples                []TrackingSample
+	// Fitted coefficients: pan = Ax + By + Cz + D
+	panCoeffs  [4]float64 // [A, B, C, D]
+	tiltCoeffs [4]float64 // [A, B, C, D]
+
+	// Or polynomial: pan = Ax² + By² + Cz² + Dxy + Exz + Fyz + Gx + Hy + Iz + J
+	panPolyCoeffs  [10]float64
+	tiltPolyCoeffs [10]float64
+
+	usePolynomial bool
+	isCalibrated  bool
 }
 
 // Close implements resource.Resource.
@@ -372,6 +390,98 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 			},
 		}, nil
 
+	case "add-sample":
+		// Get current target position from arm
+		targetPose := t.getTargetPose(ctx)
+		if targetPose == nil {
+			return nil, errors.New("failed to get target pose")
+		}
+		targetPos := targetPose.Pose().Point()
+
+		// Get current pan/tilt (user has manually centered)
+		pan, tilt, _, err := t.getCameraCurrentPTZStatus(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		sample := TrackingSample{
+			TargetPos: targetPos,
+			Pan:       pan,
+			Tilt:      tilt,
+		}
+		t.samples = append(t.samples, sample)
+
+		t.logger.Infof("Sample %d: (%.1f, %.1f, %.1f) → pan=%.4f, tilt=%.4f",
+			len(t.samples), targetPos.X, targetPos.Y, targetPos.Z, pan, tilt)
+
+		return map[string]interface{}{
+			"sample_number": len(t.samples),
+			"target":        map[string]interface{}{"x": targetPos.X, "y": targetPos.Y, "z": targetPos.Z},
+			"pan":           pan,
+			"tilt":          tilt,
+		}, nil
+
+	case "fit-linear":
+		if len(t.samples) < 4 {
+			return nil, fmt.Errorf("need at least 4 samples, have %d", len(t.samples))
+		}
+
+		panErr, tiltErr := t.fitLinear()
+		t.usePolynomial = false
+		t.isCalibrated = true
+
+		return map[string]interface{}{
+			"status":         "success",
+			"pan_coeffs":     []float64{t.panCoeffs[0], t.panCoeffs[1], t.panCoeffs[2], t.panCoeffs[3]},
+			"tilt_coeffs":    []float64{t.tiltCoeffs[0], t.tiltCoeffs[1], t.tiltCoeffs[2], t.tiltCoeffs[3]},
+			"pan_error_avg":  panErr,
+			"tilt_error_avg": tiltErr,
+			"samples_used":   len(t.samples),
+		}, nil
+
+	case "fit-polynomial":
+		if len(t.samples) < 10 {
+			return nil, fmt.Errorf("need at least 10 samples for polynomial fit, have %d", len(t.samples))
+		}
+
+		panErr, tiltErr := t.fitPolynomial()
+		t.usePolynomial = true
+		t.isCalibrated = true
+
+		return map[string]interface{}{
+			"status":         "success",
+			"pan_error_avg":  panErr,
+			"tilt_error_avg": tiltErr,
+			"samples_used":   len(t.samples),
+		}, nil
+
+	case "clear-samples":
+		t.samples = nil
+		t.isCalibrated = false
+		return map[string]interface{}{"status": "cleared"}, nil
+
+	case "test-prediction":
+		if !t.isCalibrated {
+			return nil, errors.New("not calibrated")
+		}
+
+		targetPose := t.getTargetPose(ctx)
+		targetPos := targetPose.Pose().Point()
+
+		pan, tilt := t.predictPanTilt(targetPos)
+
+		actualPan, actualTilt, _, _ := t.getCameraCurrentPTZStatus(ctx)
+
+		return map[string]interface{}{
+			"target":         map[string]interface{}{"x": targetPos.X, "y": targetPos.Y, "z": targetPos.Z},
+			"predicted_pan":  pan,
+			"predicted_tilt": tilt,
+			"actual_pan":     actualPan,
+			"actual_tilt":    actualTilt,
+			"pan_error":      pan - actualPan,
+			"tilt_error":     tilt - actualTilt,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("invalid command: %v", cmd["command"])
 	}
@@ -551,6 +661,8 @@ func (t *componentTracker) trackingLoop(ctx context.Context) {
 	}
 }
 
+/*
+
 // Main tracking loop
 func (t *componentTracker) trackTarget(ctx context.Context) error {
 	// 1. Get target position in world frame
@@ -589,6 +701,7 @@ func (t *componentTracker) trackTarget(ctx context.Context) error {
 	// 4. Send absolute move command
 	return t.sendAbsoluteMove(ctx, pan, tilt, zoom)
 }
+*/
 
 // Convert world direction to PTZ pan/tilt values
 func (t *componentTracker) directionToPanTilt(direction r3.Vector, currentCameraPos r3.Vector) (pan, tilt float64) {
@@ -745,4 +858,239 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, pan float64, ti
 		return fmt.Errorf("failed to send absolute move: %w", err)
 	}
 	return nil
+}
+
+// Fit: pan = Ax + By + Cz + D
+func (t *componentTracker) fitLinear() (panError, tiltError float64) {
+	n := len(t.samples)
+
+	// Build matrices for least squares: X * coeffs = Y
+	// X is n x 4 matrix: [x, y, z, 1]
+	// Y is n x 1 vector: [pan] or [tilt]
+
+	t.panCoeffs = t.fitLinearSingle(func(s TrackingSample) float64 { return s.Pan })
+	t.tiltCoeffs = t.fitLinearSingle(func(s TrackingSample) float64 { return s.Tilt })
+
+	// Calculate errors
+	var panErrSum, tiltErrSum float64
+	for _, s := range t.samples {
+		predPan, predTilt := t.predictPanTiltLinear(s.TargetPos)
+		panErrSum += math.Abs(predPan - s.Pan)
+		tiltErrSum += math.Abs(predTilt - s.Tilt)
+	}
+
+	panError = panErrSum / float64(n)
+	tiltError = tiltErrSum / float64(n)
+
+	t.logger.Infof("Linear fit complete:")
+	t.logger.Infof("  Pan:  %.6f*x + %.6f*y + %.6f*z + %.6f",
+		t.panCoeffs[0], t.panCoeffs[1], t.panCoeffs[2], t.panCoeffs[3])
+	t.logger.Infof("  Tilt: %.6f*x + %.6f*y + %.6f*z + %.6f",
+		t.tiltCoeffs[0], t.tiltCoeffs[1], t.tiltCoeffs[2], t.tiltCoeffs[3])
+	t.logger.Infof("  Avg error: pan=%.5f, tilt=%.5f", panError, tiltError)
+
+	return panError, tiltError
+}
+
+func (t *componentTracker) fitLinearSingle(getValue func(TrackingSample) float64) [4]float64 {
+	// Normal equations: (X^T * X) * coeffs = X^T * Y
+	// Build X^T * X (4x4) and X^T * Y (4x1)
+	var XtX [4][4]float64
+	var XtY [4]float64
+
+	for _, s := range t.samples {
+		x := [4]float64{s.TargetPos.X, s.TargetPos.Y, s.TargetPos.Z, 1}
+		y := getValue(s)
+
+		for i := 0; i < 4; i++ {
+			XtY[i] += x[i] * y
+			for j := 0; j < 4; j++ {
+				XtX[i][j] += x[i] * x[j]
+			}
+		}
+	}
+
+	// Solve 4x4 system using Gaussian elimination
+	return solveLinearSystem4x4(XtX, XtY)
+}
+
+func solveLinearSystem4x4(A [4][4]float64, b [4]float64) [4]float64 {
+	// Gaussian elimination with partial pivoting
+	var aug [4][5]float64
+	for i := 0; i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			aug[i][j] = A[i][j]
+		}
+		aug[i][4] = b[i]
+	}
+
+	// Forward elimination
+	for col := 0; col < 4; col++ {
+		// Find pivot
+		maxRow := col
+		for row := col + 1; row < 4; row++ {
+			if math.Abs(aug[row][col]) > math.Abs(aug[maxRow][col]) {
+				maxRow = row
+			}
+		}
+		aug[col], aug[maxRow] = aug[maxRow], aug[col]
+
+		if math.Abs(aug[col][col]) < 1e-10 {
+			continue // Singular
+		}
+
+		// Eliminate below
+		for row := col + 1; row < 4; row++ {
+			factor := aug[row][col] / aug[col][col]
+			for j := col; j < 5; j++ {
+				aug[row][j] -= factor * aug[col][j]
+			}
+		}
+	}
+
+	// Back substitution
+	var result [4]float64
+	for i := 3; i >= 0; i-- {
+		result[i] = aug[i][4]
+		for j := i + 1; j < 4; j++ {
+			result[i] -= aug[i][j] * result[j]
+		}
+		if math.Abs(aug[i][i]) > 1e-10 {
+			result[i] /= aug[i][i]
+		}
+	}
+
+	return result
+}
+
+// Fit: pan = Ax² + By² + Cz² + Dxy + Exz + Fyz + Gx + Hy + Iz + J
+func (t *componentTracker) fitPolynomial() (panError, tiltError float64) {
+	t.panPolyCoeffs = t.fitPolynomialSingle(func(s TrackingSample) float64 { return s.Pan })
+	t.tiltPolyCoeffs = t.fitPolynomialSingle(func(s TrackingSample) float64 { return s.Tilt })
+
+	// Calculate errors
+	var panErrSum, tiltErrSum float64
+	for _, s := range t.samples {
+		predPan, predTilt := t.predictPanTiltPolynomial(s.TargetPos)
+		panErrSum += math.Abs(predPan - s.Pan)
+		tiltErrSum += math.Abs(predTilt - s.Tilt)
+	}
+
+	n := float64(len(t.samples))
+	panError = panErrSum / n
+	tiltError = tiltErrSum / n
+
+	t.logger.Infof("Polynomial fit complete: avg error pan=%.5f, tilt=%.5f", panError, tiltError)
+
+	return panError, tiltError
+}
+
+func solveLinearSystem10x10(A [10][10]float64, b [10]float64) [10]float64 {
+	// Convert to gonum matrices
+	aData := make([]float64, 100)
+	for i := 0; i < 10; i++ {
+		for j := 0; j < 10; j++ {
+			aData[i*10+j] = A[i][j]
+		}
+	}
+
+	bData := make([]float64, 10)
+	copy(bData, b[:])
+
+	aMat := mat.NewDense(10, 10, aData)
+	bMat := mat.NewDense(10, 1, bData)
+
+	// Solve using QR decomposition
+	var qr mat.QR
+	qr.Factorize(aMat)
+
+	var result mat.Dense
+	err := qr.SolveTo(&result, false, bMat)
+	if err != nil {
+		// Return zeros if singular
+		return [10]float64{}
+	}
+
+	// Extract coefficients
+	var coeffs [10]float64
+	for i := 0; i < 10; i++ {
+		coeffs[i] = result.At(i, 0)
+	}
+
+	return coeffs
+}
+
+func (t *componentTracker) fitPolynomialSingle(getValue func(TrackingSample) float64) [10]float64 {
+	// Features: [x², y², z², xy, xz, yz, x, y, z, 1]
+	// Build normal equations
+	var XtX [10][10]float64
+	var XtY [10]float64
+
+	for _, s := range t.samples {
+		x, y, z := s.TargetPos.X, s.TargetPos.Y, s.TargetPos.Z
+		features := [10]float64{
+			x * x, y * y, z * z,
+			x * y, x * z, y * z,
+			x, y, z, 1,
+		}
+		val := getValue(s)
+
+		for i := 0; i < 10; i++ {
+			XtY[i] += features[i] * val
+			for j := 0; j < 10; j++ {
+				XtX[i][j] += features[i] * features[j]
+			}
+		}
+	}
+
+	return solveLinearSystem10x10(XtX, XtY)
+}
+
+func (t *componentTracker) predictPanTiltPolynomial(pos r3.Vector) (pan, tilt float64) {
+	x, y, z := pos.X, pos.Y, pos.Z
+	features := [10]float64{
+		x * x, y * y, z * z,
+		x * y, x * z, y * z,
+		x, y, z, 1,
+	}
+
+	pan, tilt = 0, 0
+	for i := 0; i < 10; i++ {
+		pan += t.panPolyCoeffs[i] * features[i]
+		tilt += t.tiltPolyCoeffs[i] * features[i]
+	}
+	return pan, tilt
+}
+
+func (t *componentTracker) predictPanTiltLinear(pos r3.Vector) (pan, tilt float64) {
+	pan = t.panCoeffs[0]*pos.X + t.panCoeffs[1]*pos.Y + t.panCoeffs[2]*pos.Z + t.panCoeffs[3]
+	tilt = t.tiltCoeffs[0]*pos.X + t.tiltCoeffs[1]*pos.Y + t.tiltCoeffs[2]*pos.Z + t.tiltCoeffs[3]
+	return pan, tilt
+}
+
+func (t *componentTracker) predictPanTilt(pos r3.Vector) (pan, tilt float64) {
+	if t.usePolynomial {
+		return t.predictPanTiltPolynomial(pos)
+	}
+	return t.predictPanTiltLinear(pos)
+}
+
+func (t *componentTracker) trackTarget(ctx context.Context) error {
+	if !t.isCalibrated {
+		return errors.New("not calibrated - run fit-linear or fit-polynomial first")
+	}
+
+	targetPose := t.getTargetPose(ctx)
+	if targetPose == nil {
+		return errors.New("failed to get target pose")
+	}
+	targetPos := targetPose.Pose().Point()
+
+	pan, tilt := t.predictPanTilt(targetPos)
+
+	// Clamp
+	pan = math.Max(-1.0, math.Min(1.0, pan))
+	tilt = math.Max(-1.0, math.Min(1.0, tilt))
+
+	return t.sendAbsoluteMove(ctx, pan, tilt, t.baselineZoomX)
 }
