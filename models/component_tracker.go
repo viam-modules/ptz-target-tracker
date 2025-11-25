@@ -57,6 +57,7 @@ type Config struct {
 	MinZoomValue                 float64 `json:"min_zoom_value_normalized"`
 	MaxZoomValue                 float64 `json:"max_zoom_value_normalized"`
 	Deadzone                     float64 `json:"deadzone"`
+	TrackingMode                 string  `json:"tracking_mode"`
 }
 
 // Validate ensures all parts of the config are valid and important fields exist.
@@ -136,6 +137,13 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if cfg.MinZoomValue >= cfg.MaxZoomValue {
 		return nil, nil, errors.New("min_zoom_value_normalized must be less than or equal to max_zoom_value_normalized")
 	}
+	// possible values: "polynomial-fit", "absolute-position", default: "polynomial-fit"
+	if cfg.TrackingMode == "" {
+		cfg.TrackingMode = "polynomial-fit"
+	}
+	if cfg.TrackingMode != "polynomial-fit" && cfg.TrackingMode != "absolute-position" {
+		return nil, nil, errors.New("tracking_mode must be either 'polynomial-fit' or 'absolute-position'")
+	}
 	return nil, nil, nil
 }
 
@@ -190,6 +198,7 @@ type componentTracker struct {
 	maxZoomDistance              float64
 	minZoomValue                 float64
 	maxZoomValue                 float64
+	trackingMode                 string
 }
 
 // Close implements resource.Resource.
@@ -219,6 +228,8 @@ func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Depend
 		s.cancelFunc()
 		s.running = false
 	}
+	// Update the config struct so TrackingMode and other fields are available
+	s.cfg = conf
 	s.targetComponentName = conf.TargetComponentName
 	s.onvifPTZClientName = conf.OnvifPTZClientName
 	s.updateRateHz = conf.UpdateRateHz
@@ -239,6 +250,7 @@ func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Depend
 	s.maxZoomDistance = conf.MaxZoomDistanceMM
 	s.minZoomValue = conf.MinZoomValue
 	s.maxZoomValue = conf.MaxZoomValue
+	s.trackingMode = conf.TrackingMode
 	if wasRunning {
 		go s.trackingLoop(s.cancelCtx)
 		s.logger.Info("PTZ pose tracker restarted")
@@ -298,6 +310,7 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 			TiltPolyCoeffs: [10]float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
 			IsCalibrated:   false,
 		},
+		trackingMode: conf.TrackingMode,
 	}
 
 	if conf.EnableOnStart {
@@ -1061,14 +1074,95 @@ func (t *componentTracker) predictPanTiltPolynomial(pos r3.Vector) (pan, tilt fl
 	return pan, tilt
 }
 
-func (t *componentTracker) predictPanTiltZoom(ctx context.Context, pos r3.Vector) (pan, tilt, zoom float64) {
-	pan, tilt = t.predictPanTiltPolynomial(pos)
-	zoom = t.calculateZoom(ctx, pos)
-	return pan, tilt, zoom
+func (t *componentTracker) predictPanTiltAbsolute(ctx context.Context, pos r3.Vector, cameraPos r3.Vector) (pan, tilt float64) {
+	// calculate the vector from the camera to the target
+	vector := pos.Sub(cameraPos)
+	// calculate the angle between the vector and the x-axis
+	angleDeg := math.Atan2(vector.Y, vector.X) * 180.0 / math.Pi // in degrees, range [-180, 180]
+
+	// Handle pan angle wrapping: convert to [0, 360] range, then normalize to [panMinDeg, panMaxDeg]
+	// Normalize angle to [0, 360] range
+	if angleDeg < 0 {
+		angleDeg += 360.0
+	}
+
+	// Handle 360° wrapping: if panMaxDeg > panMinDeg and angle is near 0° but pan range includes 360°,
+	// we need to check if angle should be treated as 360° + angle
+	panRange := t.panMaxDeg - t.panMinDeg
+	if panRange <= 0 {
+		t.logger.Warnf("predictPanTiltAbsolute: invalid pan range [%.2f, %.2f], using default", t.panMinDeg, t.panMaxDeg)
+		panRange = 360.0
+	}
+
+	// Normalize angle to pan range: map [panMinDeg, panMaxDeg] to [-1, 1]
+	// If angle is outside the range, clamp it
+	if angleDeg < t.panMinDeg {
+		// Check if we should wrap around (e.g., angleDeg=5° when panMinDeg=0°, panMaxDeg=355°)
+		// In this case, 5° is actually within range, so don't clamp
+		if angleDeg+360.0 <= t.panMaxDeg {
+			angleDeg += 360.0
+		} else {
+			angleDeg = t.panMinDeg
+		}
+	} else if angleDeg > t.panMaxDeg {
+		// Check if we should wrap around (e.g., angleDeg=350° when panMinDeg=0°, panMaxDeg=355°)
+		if angleDeg-360.0 >= t.panMinDeg {
+			angleDeg -= 360.0
+		} else {
+			angleDeg = t.panMaxDeg
+		}
+	}
+
+	// Normalize to [-1, 1]: panMinDeg -> -1, panMaxDeg -> +1
+	pan = 2.0*(angleDeg-t.panMinDeg)/panRange - 1.0
+
+	// Calculate tilt: elevation angle from horizontal plane
+	tiltAngleRad := math.Atan2(vector.Z, math.Sqrt(vector.X*vector.X+vector.Y*vector.Y))
+	tiltAngleDeg := tiltAngleRad * 180.0 / math.Pi // in degrees
+
+	// Normalize tilt to [-1, 1]: tiltMinDeg -> -1, tiltMaxDeg -> +1
+	tiltRange := t.tiltMaxDeg - t.tiltMinDeg
+	if tiltRange <= 0 {
+		t.logger.Warnf("predictPanTiltAbsolute: invalid tilt range [%.2f, %.2f], using default", t.tiltMinDeg, t.tiltMaxDeg)
+		tiltRange = 90.0
+	}
+
+	// Clamp tilt angle to valid range
+	if tiltAngleDeg < t.tiltMinDeg {
+		tiltAngleDeg = t.tiltMinDeg
+	} else if tiltAngleDeg > t.tiltMaxDeg {
+		tiltAngleDeg = t.tiltMaxDeg
+	}
+
+	tilt = 2.0*(tiltAngleDeg-t.tiltMinDeg)/tiltRange - 1.0
+
+	t.logger.Debugf("predictPanTiltAbsolute: angle=%.2f°, pan=%.3f, tiltAngle=%.2f°, tilt=%.3f", angleDeg, pan, tiltAngleDeg, tilt)
+
+	// Final clamp to ensure [-1, 1] range (shouldn't be necessary, but safety check)
+	pan = math.Max(-1.0, math.Min(1.0, pan))
+	tilt = math.Max(-1.0, math.Min(1.0, tilt))
+
+	return pan, tilt
 }
 
-func (t *componentTracker) calculateZoom(ctx context.Context, pos r3.Vector) float64 {
-	cameraPos := t.getCameraPose(ctx).Pose().Point()
+func (t *componentTracker) predictPanTiltZoom(ctx context.Context, pos r3.Vector) (pan, tilt, zoom float64, err error) {
+	cameraPose := t.getCameraPose(ctx)
+	if cameraPose == nil {
+		return 0, 0, 0, errors.New("failed to get camera pose")
+	}
+	cameraPos := cameraPose.Pose().Point()
+	switch t.cfg.TrackingMode {
+	case "polynomial-fit":
+		pan, tilt = t.predictPanTiltPolynomial(pos)
+	case "absolute-position":
+		pan, tilt = t.predictPanTiltAbsolute(ctx, pos, cameraPos)
+	default:
+		return 0, 0, 0, errors.New("invalid tracking mode: " + t.cfg.TrackingMode)
+	}
+	zoom = t.calculateZoom(ctx, pos, cameraPos)
+	return pan, tilt, zoom, nil
+}
+func (t *componentTracker) calculateZoom(ctx context.Context, pos r3.Vector, cameraPos r3.Vector) float64 {
 	distance := pos.Distance(cameraPos)
 	t.logger.Debugf("calculateZoom: calculating zoom for distance: %.2f mm, minZoomDistance: %.2f mm, maxZoomDistance: %.2f mm, minZoomValue: %.2f, maxZoomValue: %.2f\n", distance, t.minZoomDistance, t.maxZoomDistance, t.minZoomValue, t.maxZoomValue)
 
@@ -1098,7 +1192,8 @@ func (t *componentTracker) calculateZoom(ctx context.Context, pos r3.Vector) flo
 }
 
 func (t *componentTracker) trackTarget(ctx context.Context) error {
-	if !t.calibration.IsCalibrated {
+	// Only require calibration for polynomial-fit mode
+	if t.trackingMode == "polynomial-fit" && !t.calibration.IsCalibrated {
 		return errors.New("not calibrated - run fit-polynomial-calibration first")
 	}
 
@@ -1108,7 +1203,11 @@ func (t *componentTracker) trackTarget(ctx context.Context) error {
 	}
 	targetPos := targetPose.Pose().Point()
 
-	pan, tilt, zoom := t.predictPanTiltZoom(ctx, targetPos)
+	pan, tilt, zoom, err := t.predictPanTiltZoom(ctx, targetPos)
+	if err != nil {
+		t.logger.Errorf("Failed to predict pan/tilt/zoom: %v", err)
+		return err
+	}
 	t.logger.Debugf("Predicted pan: %.1f, tilt: %.1f, zoom: %.1f", pan, tilt, zoom)
 
 	// Clamp
