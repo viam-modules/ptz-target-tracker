@@ -851,6 +851,7 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, pan float64, ti
 	var panDeltaDegrees, panRequiredSpeedDegreesPerSecond float64
 	var tiltDeltaDegrees, tiltRequiredSpeedDegreesPerSecond float64
 
+	// If the user has not set a fixed pan speed, calculate it based on the required angle change and available time
 	if panSpeed == 0 {
 		// Calculate speed based on required angle change and available time
 		// panDeltaNormalized already calculated above
@@ -879,6 +880,7 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, pan float64, ti
 		// Clamp to [0.0, 1.0] as ONVIF expects normalized speeds
 		panSpeed = math.Max(0.0, math.Min(1.0, panSpeed))
 	}
+	// If the user has not set a fixed tilt speed, calculate it based on the required angle change and available time
 	if tiltSpeed == 0 {
 		// Calculate speed based on required angle change and available time
 		// tiltDeltaNormalized already calculated above
@@ -906,6 +908,7 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, pan float64, ti
 		// Clamp to [0.0, 1.0] as ONVIF expects normalized speeds
 		tiltSpeed = math.Max(0.0, math.Min(1.0, tiltSpeed))
 	}
+	// If the user has not set a fixed zoom speed, we will simply use the max speed
 	if t.zoomSpeed == 0 {
 		if zoomDeltaNormalized < t.deadzone {
 			zoomSpeed = 0.0
