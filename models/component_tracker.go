@@ -52,6 +52,7 @@ type Config struct {
 	PanMaxDeg                    float64 `json:"pan_max_deg"`
 	TiltMinDeg                   float64 `json:"tilt_min_deg"`
 	TiltMaxDeg                   float64 `json:"tilt_max_deg"`
+	Deadzone                     float64 `json:"deadzone"`
 }
 
 // Validate ensures all parts of the config are valid and important fields exist.
@@ -116,6 +117,9 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if cfg.TiltMaxSpeedDegreesPerSecond < cfg.TiltMinSpeedDegreesPerSecond {
 		return nil, nil, errors.New("tilt_max_speed_degrees_per_second must be greater than tilt_min_speed_degrees_per_second")
 	}
+	if cfg.Deadzone < 0 || cfg.Deadzone > 1 {
+		return nil, nil, errors.New("deadzone must be greater than or equal to 0 and less than or equal to 1 (normalized range)")
+	}
 	return nil, nil, nil
 }
 
@@ -165,6 +169,7 @@ type componentTracker struct {
 	lastSentPan                  float64
 	lastSentTilt                 float64
 	lastSentZoom                 float64
+	deadzone                     float64
 }
 
 // Close implements resource.Resource.
@@ -209,6 +214,7 @@ func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Depend
 	s.panMaxDeg = conf.PanMaxDeg
 	s.tiltMinDeg = conf.TiltMinDeg
 	s.tiltMaxDeg = conf.TiltMaxDeg
+	s.deadzone = conf.Deadzone
 	if wasRunning {
 		go s.trackingLoop(s.cancelCtx)
 		s.logger.Info("PTZ pose tracker restarted")
@@ -257,6 +263,7 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 		panMaxDeg:                    conf.PanMaxDeg,
 		tiltMinDeg:                   conf.TiltMinDeg,
 		tiltMaxDeg:                   conf.TiltMaxDeg,
+		deadzone:                     conf.Deadzone,
 		samples:                      nil,
 		calibration: Calibration{
 			PanPolyCoeffs:  [10]float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -309,7 +316,15 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 		t.fixedZoomValue = zoom
 		return map[string]interface{}{"status": "success", "zoom": t.fixedZoomValue}, nil
 
-	case "add-sample":
+	case "set-deadzone":
+		deadzone, ok := cmd["deadzone"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("deadzone is not a float")
+		}
+		t.deadzone = deadzone
+		return map[string]interface{}{"status": "success", "deadzone": t.deadzone}, nil
+
+	case "add-calibration-sample":
 		// Get current target position from arm
 		targetPose := t.getTargetPose(ctx)
 		if targetPose == nil {
@@ -759,6 +774,19 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, pan float64, ti
 	// Calculate deltas to current position for speed calculation
 	panDeltaNormalized := math.Abs(pan - currentPan)
 	tiltDeltaNormalized := math.Abs(tilt - currentTilt)
+
+	// Deadzone check: skip move if target is within deadzone of current position
+	// Deadzone is in normalized [0, 1] range (e.g., 0.01 = 1% of the full range)
+	if t.deadzone > 0 {
+		if panDeltaNormalized < t.deadzone && tiltDeltaNormalized < t.deadzone {
+			t.logger.Debugf("Skipping move - within deadzone: pan_delta=%.4f (deadzone=%.4f), tilt_delta=%.4f (deadzone=%.4f)", panDeltaNormalized, t.deadzone, tiltDeltaNormalized, t.deadzone)
+			// Update last sent position even though we skipped
+			t.lastSentPan = pan
+			t.lastSentTilt = tilt
+			t.lastSentZoom = zoom
+			return nil
+		}
+	}
 
 	// Threshold: skip move if delta to current position is very small (< 0.001 normalized)
 	const moveThresholdNormalized = 0.001
