@@ -1,18 +1,20 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"image"
 	"image/color"
 	"image/draw"
-	"math"
+	"image/jpeg"
 
 	"go.viam.com/rdk/components/camera"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/spatialmath"
+	"go.viam.com/rdk/utils"
 )
 
 var (
@@ -29,11 +31,7 @@ func init() {
 
 type AimingCameraConfig struct {
 	resource.TriviallyValidateConfig
-	CameraName      string `json:"camera_name"`
-	CrosshairSize   int    `json:"crosshair_size"`   // Length of crosshair lines from center
-	CrosshairThick  int    `json:"crosshair_thick"`  // Thickness of crosshair lines
-	CrosshairColor  string `json:"crosshair_color"`  // Color: "red", "green", "blue", "white", "black"
-	CrosshairCircle bool   `json:"crosshair_circle"` // Add a circle at the center
+	CameraName string `json:"camera_name"`
 }
 
 // Validate ensures all parts of the config are valid and important fields exist.
@@ -44,20 +42,12 @@ func (cfg *AimingCameraConfig) Validate(path string) ([]string, []string, error)
 	if cfg.CameraName == "" {
 		return nil, nil, errors.New("camera_name is required")
 	}
-	// Set defaults
-	if cfg.CrosshairSize == 0 {
-		cfg.CrosshairSize = 100
-	}
-	if cfg.CrosshairThick == 0 {
-		cfg.CrosshairThick = 20
-	}
-	if cfg.CrosshairColor == "" {
-		cfg.CrosshairColor = "red"
-	}
 	return []string{cfg.CameraName}, nil, nil
 }
 
 type aimingCamera struct {
+	resource.TriviallyCloseable
+	resource.TriviallyReconfigurable
 	name           resource.Name
 	logger         logging.Logger
 	cfg            *AimingCameraConfig
@@ -79,60 +69,25 @@ func newAimingCamera(ctx context.Context, deps resource.Dependencies, rawConf re
 		return nil, err
 	}
 
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-
 	// Parse color
-	crosshairColor := parseColor(conf.CrosshairColor)
+	crosshairColor := color.RGBA{R: 255, G: 0, B: 0, A: 255}
 
 	s := &aimingCamera{
 		name:           rawConf.ResourceName(),
 		logger:         logger,
 		cfg:            conf,
-		cancelCtx:      cancelCtx,
-		cancelFunc:     cancelFunc,
 		underlyingCam:  cam,
 		crosshairColor: crosshairColor,
 	}
 	return s, nil
 }
 
-func (s *aimingCamera) Reconfigure(ctx context.Context, deps resource.Dependencies, rawConf resource.Config) error {
-	conf, err := resource.NativeConfig[*AimingCameraConfig](rawConf)
-	if err != nil {
-		return err
-	}
-
-	// Get underlying camera if it changed
-	cam, err := camera.FromDependencies(deps, conf.CameraName)
-	if err != nil {
-		return err
-	}
-
-	s.cfg = conf
-	s.underlyingCam = cam
-	s.crosshairColor = parseColor(conf.CrosshairColor)
-	return nil
-}
-
 func (s *aimingCamera) Name() resource.Name {
 	return s.name
 }
 
-func (s *aimingCamera) Close(context.Context) error {
-	s.cancelFunc()
-	return nil
-}
-
 func (s *aimingCamera) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
-	return nil, nil
-}
-
-func (s *aimingCamera) Start(ctx context.Context) error {
-	return nil
-}
-
-func (s *aimingCamera) Stop(ctx context.Context) error {
-	return nil
+	return nil, errors.New("not implemented")
 }
 
 func (s *aimingCamera) GetImage(ctx context.Context) (image.Image, error) {
@@ -166,8 +121,8 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 
 	// Draw crosshair lines
-	size := s.cfg.CrosshairSize
-	thick := s.cfg.CrosshairThick
+	size := 100
+	thick := 20
 
 	// Horizontal line
 	for x := centerX - size; x <= centerX+size; x++ {
@@ -187,52 +142,29 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 		}
 	}
 
-	// Optional: Draw circle at center
-	if s.cfg.CrosshairCircle {
-		radius := 5
-		for angle := 0.0; angle < 360.0; angle += 1.0 {
-			rad := angle * math.Pi / 180.0
-			x := centerX + int(float64(radius)*math.Cos(rad))
-			y := centerY + int(float64(radius)*math.Sin(rad))
-			if x >= 0 && x < bounds.Dx() && y >= 0 && y < bounds.Dy() {
-				rgba.Set(x, y, s.crosshairColor)
-			}
-		}
-	}
-
 	return rgba
 }
 
-// parseColor converts color string to color.Color
-func parseColor(colorName string) color.Color {
-	switch colorName {
-	case "red":
-		return color.RGBA{R: 255, G: 0, B: 0, A: 255}
-	case "green":
-		return color.RGBA{R: 0, G: 255, B: 0, A: 255}
-	case "blue":
-		return color.RGBA{R: 0, G: 0, B: 255, A: 255}
-	case "white":
-		return color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	case "black":
-		return color.RGBA{R: 0, G: 0, B: 0, A: 255}
-	case "yellow":
-		return color.RGBA{R: 255, G: 255, B: 0, A: 255}
-	case "cyan":
-		return color.RGBA{R: 0, G: 255, B: 255, A: 255}
-	case "magenta":
-		return color.RGBA{R: 255, G: 0, B: 255, A: 255}
-	default:
-		return color.RGBA{R: 255, G: 0, B: 0, A: 255} // Default to red
-	}
-}
-
 func (s *aimingCamera) Geometries(ctx context.Context, extra map[string]interface{}) ([]spatialmath.Geometry, error) {
-	return nil, nil
+	return s.underlyingCam.Geometries(ctx, extra)
 }
 
 func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
-	return nil, camera.ImageMetadata{}, nil
+	mimetypes := []string{mimeType}
+	imgs, _, err := s.underlyingCam.Images(ctx, mimetypes, extra)
+	if err != nil {
+		return nil, camera.ImageMetadata{}, err
+	}
+	img, err := imgs[0].Image(ctx)
+	if err != nil {
+		return nil, camera.ImageMetadata{}, err
+	}
+	imgWithCrosshair := s.drawCrosshair(img)
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, imgWithCrosshair, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, camera.ImageMetadata{}, err
+	}
+	return b.Bytes(), camera.ImageMetadata{MimeType: utils.MimeTypeJPEG}, nil
 }
 
 func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
@@ -266,7 +198,7 @@ func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map
 }
 
 func (s *aimingCamera) NextPointCloud(ctx context.Context, extra map[string]interface{}) (pointcloud.PointCloud, error) {
-	return nil, errors.New("next point cloud not implemented")
+	return s.underlyingCam.NextPointCloud(ctx, extra)
 }
 
 func (s *aimingCamera) Properties(ctx context.Context) (camera.Properties, error) {
