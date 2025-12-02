@@ -110,18 +110,24 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 }
 
 func (s *aimingCamera) Geometries(ctx context.Context, extra map[string]interface{}) ([]spatialmath.Geometry, error) {
-	return s.underlyingCam.Geometries(ctx, extra)
+	geometry, err := s.underlyingCam.Geometries(ctx, extra)
+	if err != nil {
+		errorMsg := "Error when requesting geometries from underlying camera: " + err.Error()
+		return nil, errors.New(errorMsg)
+	}
+	return geometry, nil
 }
 
 func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
 	return nil, camera.ImageMetadata{}, errors.New("single image retrieval not implemented; use Images() instead")
 }
 
-func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
+func (s *aimingCamera) Images(ctx context.Context, filterSourceNames []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
 	// Get images from underlying camera
-	imgs, meta, err := s.underlyingCam.Images(ctx, mimeTypes, extra)
+	imgs, meta, err := s.underlyingCam.Images(ctx, filterSourceNames, extra)
 	if err != nil {
-		return nil, resource.ResponseMetadata{}, err
+		errorMsg := "Error when requesting images from underlying camera: " + err.Error()
+		return nil, resource.ResponseMetadata{}, errors.New(errorMsg)
 	}
 
 	// Create new named images with crosshair overlay
@@ -130,7 +136,8 @@ func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map
 		// Get the actual image
 		img, err := namedImg.Image(ctx)
 		if err != nil {
-			return nil, resource.ResponseMetadata{}, err
+			errorMsg := "Error when getting image from named image: " + err.Error()
+			return nil, resource.ResponseMetadata{}, errors.New(errorMsg)
 		}
 
 		// Draw crosshair on it
@@ -139,7 +146,8 @@ func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map
 		// Create new NamedImage
 		resultImg, err := camera.NamedImageFromImage(imgWithCrosshair, namedImg.SourceName, namedImg.MimeType())
 		if err != nil {
-			return nil, resource.ResponseMetadata{}, err
+			errorMsg := "Error when creating named image from image with crosshair: " + err.Error()
+			return nil, resource.ResponseMetadata{}, errors.New(errorMsg)
 		}
 		resultImgs[i] = resultImg
 	}
@@ -148,10 +156,21 @@ func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map
 }
 
 func (s *aimingCamera) NextPointCloud(ctx context.Context, extra map[string]interface{}) (pointcloud.PointCloud, error) {
-	return s.underlyingCam.NextPointCloud(ctx, extra)
+	// Return point cloud from underlying camera
+	pointcloud, err := s.underlyingCam.NextPointCloud(ctx, extra)
+	if err != nil {
+		errorMsg := "Error when requesting point cloud from underlying camera: " + err.Error()
+		return nil, errors.New(errorMsg)
+	}
+	return pointcloud, nil
 }
 
 func (s *aimingCamera) Properties(ctx context.Context) (camera.Properties, error) {
 	// Return properties from underlying camera
-	return s.underlyingCam.Properties(ctx)
+	properties, err := s.underlyingCam.Properties(ctx)
+	if err != nil {
+		errorMsg := "Error when requesting properties from underlying camera: " + err.Error()
+		return camera.Properties{}, errors.New(errorMsg)
+	}
+	return properties, nil
 }
