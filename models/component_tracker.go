@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erh/vmodutils"
-	"github.com/erh/vmodutils/touch"
 	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/components/generic"
 	"go.viam.com/rdk/logging"
@@ -553,17 +552,7 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 }
 
 func (t *componentTracker) getTargetPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
-	fsc, err := t.frameSystemService.FrameSystemConfig(ctx)
-	if err != nil {
-		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil, err
-	}
-	targetFramePart := touch.FindPart(fsc, t.targetComponentName)
-	if targetFramePart == nil {
-		t.logger.Errorf("can't find frame for %v", t.targetComponentName)
-		return nil, fmt.Errorf("can't find frame for %v", t.targetComponentName)
-	}
-	targetPose, err := t.frameSystemService.GetPose(ctx, targetFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
+	targetPose, err := t.frameSystemService.GetPose(ctx, t.targetComponentName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
 		t.logger.Errorf("Failed to get pose: %v", err)
 		return nil, err
@@ -573,17 +562,7 @@ func (t *componentTracker) getTargetPose(ctx context.Context) (*referenceframe.P
 }
 
 func (t *componentTracker) getCameraPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
-	fsc, err := t.frameSystemService.FrameSystemConfig(ctx)
-	if err != nil {
-		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil, err
-	}
-	cameraFramePart := touch.FindPart(fsc, t.cfg.PTZCameraName)
-	if cameraFramePart == nil {
-		t.logger.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-		return nil, fmt.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-	}
-	cameraPose, err := t.frameSystemService.GetPose(ctx, cameraFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
+	cameraPose, err := t.frameSystemService.GetPose(ctx, t.cfg.PTZCameraName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
 		t.logger.Errorf("Failed to get pose: %v", err)
 		return nil, err
