@@ -101,22 +101,10 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 	thick := 20
 
 	// Horizontal line
-	for x := centerX - size; x <= centerX+size; x++ {
-		for dy := -thick / 2; dy <= thick/2; dy++ {
-			if x >= 0 && x < bounds.Dx() && centerY+dy >= 0 && centerY+dy < bounds.Dy() {
-				rgba.Set(x, centerY+dy, crosshairColorRed)
-			}
-		}
-	}
+	draw.Draw(rgba, image.Rect(centerX-size, centerY-thick/2, centerX+size, centerY+thick/2), &image.Uniform{crosshairColorRed}, image.Point{}, draw.Src)
 
 	// Vertical line
-	for y := centerY - size; y <= centerY+size; y++ {
-		for dx := -thick / 2; dx <= thick/2; dx++ {
-			if y >= 0 && y < bounds.Dy() && centerX+dx >= 0 && centerX+dx < bounds.Dx() {
-				rgba.Set(centerX+dx, y, crosshairColorRed)
-			}
-		}
-	}
+	draw.Draw(rgba, image.Rect(centerX-thick/2, centerY-size, centerX+thick/2, centerY+size), &image.Uniform{crosshairColorRed}, image.Point{}, draw.Src)
 
 	return rgba
 }
