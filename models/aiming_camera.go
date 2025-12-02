@@ -48,8 +48,6 @@ type aimingCamera struct {
 	name           resource.Name
 	logger         logging.Logger
 	cfg            *AimingCameraConfig
-	cancelCtx      context.Context
-	cancelFunc     func()
 	underlyingCam  camera.Camera
 	crosshairColor color.Color
 }
@@ -66,15 +64,11 @@ func newAimingCamera(ctx context.Context, deps resource.Dependencies, rawConf re
 		return nil, err
 	}
 
-	// Parse color
-	crosshairColor := color.RGBA{R: 255, G: 0, B: 0, A: 255}
-
 	s := &aimingCamera{
-		name:           rawConf.ResourceName(),
-		logger:         logger,
-		cfg:            conf,
-		underlyingCam:  cam,
-		crosshairColor: crosshairColor,
+		name:          rawConf.ResourceName(),
+		logger:        logger,
+		cfg:           conf,
+		underlyingCam: cam,
 	}
 	return s, nil
 }
@@ -101,6 +95,8 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 	rgba := image.NewRGBA(bounds)
 	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 
+	crosshairColorRed := color.RGBA{R: 255, G: 0, B: 0, A: 255}
+
 	// Draw crosshair lines
 	size := 100
 	thick := 20
@@ -109,7 +105,7 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 	for x := centerX - size; x <= centerX+size; x++ {
 		for dy := -thick / 2; dy <= thick/2; dy++ {
 			if x >= 0 && x < bounds.Dx() && centerY+dy >= 0 && centerY+dy < bounds.Dy() {
-				rgba.Set(x, centerY+dy, s.crosshairColor)
+				rgba.Set(x, centerY+dy, crosshairColorRed)
 			}
 		}
 	}
@@ -118,7 +114,7 @@ func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 	for y := centerY - size; y <= centerY+size; y++ {
 		for dx := -thick / 2; dx <= thick/2; dx++ {
 			if y >= 0 && y < bounds.Dy() && centerX+dx >= 0 && centerX+dx < bounds.Dx() {
-				rgba.Set(centerX+dx, y, s.crosshairColor)
+				rgba.Set(centerX+dx, y, crosshairColorRed)
 			}
 		}
 	}

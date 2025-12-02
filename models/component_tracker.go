@@ -2,11 +2,9 @@ package models
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"time"
 
 	"github.com/erh/vmodutils"
@@ -384,6 +382,7 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 		t.running = true
 		go t.trackingLoop(t.cancelCtx)
 		return map[string]interface{}{"status": "running"}, nil
+
 	case "stop":
 		if !t.running {
 			return map[string]interface{}{"status": "already_stopped"}, nil
@@ -393,65 +392,12 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 			t.cancelFunc() // Cancel context to exit the loop
 		}
 		return map[string]interface{}{"status": "stopped"}, nil
-	case "set-zoom":
-		zoom, ok := cmd["zoom"].(float64)
-		if !ok {
-			return nil, fmt.Errorf("zoom is not a float")
-		}
-		t.zoomValue = zoom
-		return map[string]interface{}{"status": "success", "zoom": t.zoomValue}, nil
-
-	case "set-deadzone":
-		deadzone, ok := cmd["deadzone"].(float64)
-		if !ok {
-			return nil, fmt.Errorf("deadzone is not a float")
-		}
-		t.deadzone = deadzone
-		return map[string]interface{}{"status": "success", "deadzone": t.deadzone}, nil
-
-	case "add-calibration-sample":
-		// Get current target position from arm
-		targetPose, err := t.getTargetPose(ctx)
-		if err != nil {
-			return nil, err
-		}
-		targetPos := targetPose.Pose().Point()
-
-		// Get current pan/tilt (user has manually centered)
-		pan, tilt, _, err := t.getCameraCurrentPTZStatus(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		tag := "manual"
-		if cmd["tag"] != nil {
-			tag = cmd["tag"].(string)
-		}
-
-		sample := TrackingSample{
-			TargetPos: targetPos,
-			Pan:       pan,
-			Tilt:      tilt,
-			Tag:       tag,
-		}
-		t.samples = append(t.samples, sample)
-
-		t.logger.Infof("Sample %d: (%.1f, %.1f, %.1f) → pan=%.4f, tilt=%.4f",
-			len(t.samples), targetPos.X, targetPos.Y, targetPos.Z, pan, tilt)
-		lastSample := t.samples[len(t.samples)-1]
-		t.fitPolynomial()
-		return map[string]interface{}{
-			"sample_number": len(t.samples),
-			"target":        map[string]interface{}{"x": lastSample.TargetPos.X, "y": lastSample.TargetPos.Y, "z": lastSample.TargetPos.Z},
-			"pan":           lastSample.Pan,
-			"tilt":          lastSample.Tilt,
-			"tag":           lastSample.Tag,
-		}, nil
 
 	case "get-calibration-samples":
 		return map[string]interface{}{
 			"calibration-samples": t.samples,
 		}, nil
+
 	case "load-calibration-samples":
 		samplesRaw, ok := cmd["calibration-samples"]
 		if !ok {
@@ -532,54 +478,46 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 			"samples": len(t.samples),
 		}, nil
 
-	case "save-calibration-samples-to-file":
-		filename := "calibration-samples.json"
-		if cmd["filename"] != nil {
-			filename = cmd["filename"].(string)
-		}
-		err := t.saveSamplesToJSONFile(filename)
+	case "push-sample":
+		// Get current target position from arm
+		targetPose, err := t.getTargetPose(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]interface{}{
-			"status":   "success",
-			"filename": filename,
-		}, nil
-	case "load-calibration-samples-from-file":
-		filename := "calibration-samples.json"
-		if cmd["filename"] != nil {
-			filename = cmd["filename"].(string)
-		}
-		samples, err := t.loadSamplesFromJSONFile(filename)
+		targetPos := targetPose.Pose().Point()
+
+		// Get current pan/tilt (user has manually centered)
+		pan, tilt, _, err := t.getCameraCurrentPTZStatus(ctx)
 		if err != nil {
 			return nil, err
 		}
-		t.samples = samples
+
+		tag := "manual"
+		if cmd["tag"] != nil {
+			tag = cmd["tag"].(string)
+		}
+
+		sample := TrackingSample{
+			TargetPos: targetPos,
+			Pan:       pan,
+			Tilt:      tilt,
+			Tag:       tag,
+		}
+		t.samples = append(t.samples, sample)
+
+		t.logger.Infof("Sample %d: (%.1f, %.1f, %.1f) → pan=%.4f, tilt=%.4f",
+			len(t.samples), targetPos.X, targetPos.Y, targetPos.Z, pan, tilt)
+		lastSample := t.samples[len(t.samples)-1]
 		t.fitPolynomial()
 		return map[string]interface{}{
-			"status":   "success",
-			"filename": filename,
-			"samples":  len(t.samples),
+			"sample_number": len(t.samples),
+			"target":        map[string]interface{}{"x": lastSample.TargetPos.X, "y": lastSample.TargetPos.Y, "z": lastSample.TargetPos.Z},
+			"pan":           lastSample.Pan,
+			"tilt":          lastSample.Tilt,
+			"tag":           lastSample.Tag,
 		}, nil
 
-	case "clear-calibration-samples":
-		t.samples = nil
-		t.calibration.IsCalibrated = false
-		return map[string]interface{}{"status": "cleared"}, nil
-
-	case "remove-calibration-sample":
-		index, ok := cmd["index"].(int)
-		if !ok {
-			return nil, fmt.Errorf("index is not an int")
-		}
-		if index < 0 || index >= len(t.samples) {
-			return nil, fmt.Errorf("index out of range")
-		}
-		t.samples = append(t.samples[:index], t.samples[index+1:]...)
-		t.fitPolynomial()
-		return map[string]interface{}{"status": "removed", "index": index}, nil
-
-	case "remove-last-calibration-sample":
+	case "pop-sample":
 		if len(t.samples) == 0 {
 			return nil, fmt.Errorf("no samples to remove")
 		}
@@ -592,7 +530,7 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 		t.fitPolynomial()
 		return map[string]interface{}{"status": "cleared"}, nil
 
-	case "fit-polynomial-calibration":
+	case "compute-polynomial":
 		if len(t.samples) < 10 {
 			return nil, fmt.Errorf("need at least 10 samples for polynomial fit, have %d", len(t.samples))
 		}
@@ -600,115 +538,18 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 		panErr, tiltErr := t.fitPolynomial()
 
 		return map[string]interface{}{
-			"status":         "success",
-			"pan_error_avg":  panErr,
-			"tilt_error_avg": tiltErr,
-			"samples_used":   len(t.samples),
-		}, nil
-	case "get-calibration":
-		return map[string]interface{}{
 			"status":           "success",
+			"pan_error_avg":    panErr,
+			"tilt_error_avg":   tiltErr,
+			"samples_used":     len(t.samples),
 			"is_calibrated":    t.calibration.IsCalibrated,
 			"pan_poly_coeffs":  []float64{t.calibration.PanPolyCoeffs[0], t.calibration.PanPolyCoeffs[1], t.calibration.PanPolyCoeffs[2], t.calibration.PanPolyCoeffs[3], t.calibration.PanPolyCoeffs[4], t.calibration.PanPolyCoeffs[5], t.calibration.PanPolyCoeffs[6], t.calibration.PanPolyCoeffs[7], t.calibration.PanPolyCoeffs[8], t.calibration.PanPolyCoeffs[9]},
 			"tilt_poly_coeffs": []float64{t.calibration.TiltPolyCoeffs[0], t.calibration.TiltPolyCoeffs[1], t.calibration.TiltPolyCoeffs[2], t.calibration.TiltPolyCoeffs[3], t.calibration.TiltPolyCoeffs[4], t.calibration.TiltPolyCoeffs[5], t.calibration.TiltPolyCoeffs[6], t.calibration.TiltPolyCoeffs[7], t.calibration.TiltPolyCoeffs[8], t.calibration.TiltPolyCoeffs[9]},
-		}, nil
-	case "load-calibration":
-		panPolyCoeffs, ok := cmd["pan_poly_coeffs"].([]float64)
-		if !ok {
-			return nil, fmt.Errorf("pan_poly_coeffs is not a []float64")
-		}
-		tiltPolyCoeffs, ok := cmd["tilt_poly_coeffs"].([]float64)
-		if !ok {
-			return nil, fmt.Errorf("tilt_poly_coeffs is not a []float64")
-		}
-		if len(panPolyCoeffs) != 10 || len(tiltPolyCoeffs) != 10 {
-			return nil, fmt.Errorf("pan_poly_coeffs and tilt_poly_coeffs must be 10")
-		}
-		t.calibration.PanPolyCoeffs = [10]float64{panPolyCoeffs[0], panPolyCoeffs[1], panPolyCoeffs[2], panPolyCoeffs[3], panPolyCoeffs[4], panPolyCoeffs[5], panPolyCoeffs[6], panPolyCoeffs[7], panPolyCoeffs[8], panPolyCoeffs[9]}
-		t.calibration.TiltPolyCoeffs = [10]float64{tiltPolyCoeffs[0], tiltPolyCoeffs[1], tiltPolyCoeffs[2], tiltPolyCoeffs[3], tiltPolyCoeffs[4], tiltPolyCoeffs[5], tiltPolyCoeffs[6], tiltPolyCoeffs[7], tiltPolyCoeffs[8], tiltPolyCoeffs[9]}
-		t.calibration.IsCalibrated = true
-		return map[string]interface{}{
-			"status": "success",
-		}, nil
-	case "save-calibration-to-file":
-		filename := "calibration.json"
-		if cmd["filename"] != nil {
-			filename = cmd["filename"].(string)
-		}
-		err := t.saveCalibrationToJSONFile(filename)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]interface{}{
-			"status":           "success",
-			"filename":         filename,
-			"is_calibrated":    t.calibration.IsCalibrated,
-			"pan_poly_coeffs":  []float64{t.calibration.PanPolyCoeffs[0], t.calibration.PanPolyCoeffs[1], t.calibration.PanPolyCoeffs[2], t.calibration.PanPolyCoeffs[3], t.calibration.PanPolyCoeffs[4], t.calibration.PanPolyCoeffs[5], t.calibration.PanPolyCoeffs[6], t.calibration.PanPolyCoeffs[7], t.calibration.PanPolyCoeffs[8], t.calibration.PanPolyCoeffs[9]},
-			"tilt_poly_coeffs": []float64{t.calibration.TiltPolyCoeffs[0], t.calibration.TiltPolyCoeffs[1], t.calibration.TiltPolyCoeffs[2], t.calibration.TiltPolyCoeffs[3], t.calibration.TiltPolyCoeffs[4], t.calibration.TiltPolyCoeffs[5], t.calibration.TiltPolyCoeffs[6], t.calibration.TiltPolyCoeffs[7], t.calibration.TiltPolyCoeffs[8], t.calibration.TiltPolyCoeffs[9]},
-		}, nil
-	case "load-calibration-from-file":
-		filename := "calibration.json"
-		if cmd["filename"] != nil {
-			filename = cmd["filename"].(string)
-		}
-		err := t.loadCalibrationFromJSONFile(filename)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]interface{}{
-			"status":           "success",
-			"filename":         filename,
-			"pan_poly_coeffs":  []float64{t.calibration.PanPolyCoeffs[0], t.calibration.PanPolyCoeffs[1], t.calibration.PanPolyCoeffs[2], t.calibration.PanPolyCoeffs[3], t.calibration.PanPolyCoeffs[4], t.calibration.PanPolyCoeffs[5], t.calibration.PanPolyCoeffs[6], t.calibration.PanPolyCoeffs[7], t.calibration.PanPolyCoeffs[8], t.calibration.PanPolyCoeffs[9]},
-			"tilt_poly_coeffs": []float64{t.calibration.TiltPolyCoeffs[0], t.calibration.TiltPolyCoeffs[1], t.calibration.TiltPolyCoeffs[2], t.calibration.TiltPolyCoeffs[3], t.calibration.TiltPolyCoeffs[4], t.calibration.TiltPolyCoeffs[5], t.calibration.TiltPolyCoeffs[6], t.calibration.TiltPolyCoeffs[7], t.calibration.TiltPolyCoeffs[8], t.calibration.TiltPolyCoeffs[9]},
-			"is_calibrated":    t.calibration.IsCalibrated,
 		}, nil
 
 	default:
 		return nil, fmt.Errorf("invalid command: %v", cmd["command"])
 	}
-}
-
-func (t *componentTracker) saveCalibrationToJSONFile(filename string) error {
-	jsonData, err := json.MarshalIndent(t, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal calibration: %v", err)
-	}
-	err = os.WriteFile(filename, jsonData, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write calibration to file: %v", err)
-	}
-	return nil
-}
-
-func (t *componentTracker) loadCalibrationFromJSONFile(filename string) error {
-	jsonData, err := os.ReadFile(filename)
-	if err != nil {
-		return fmt.Errorf("failed to read calibration from file: %v", err)
-	}
-	return json.Unmarshal(jsonData, &t.calibration)
-}
-func (t *componentTracker) saveSamplesToJSONFile(filename string) error {
-	jsonData, err := json.MarshalIndent(t.samples, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal samples: %v", err)
-	}
-	err = os.WriteFile(filename, jsonData, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write samples to file: %v", err)
-	}
-	return nil
-}
-func (t *componentTracker) loadSamplesFromJSONFile(filename string) ([]TrackingSample, error) {
-	jsonData, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read samples from file: %v", err)
-	}
-	var samples []TrackingSample
-	err = json.Unmarshal(jsonData, &samples)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal samples: %v", err)
-	}
-	return samples, nil
 }
 
 func (t *componentTracker) getTargetPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
