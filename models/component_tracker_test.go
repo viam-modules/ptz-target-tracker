@@ -1,7 +1,6 @@
 package models
 
 import (
-	"context"
 	"math"
 	"testing"
 
@@ -30,31 +29,34 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 	targetPos1 := r3.Vector{X: 0, Y: 100, Z: 0} // Target directly along +Y axis
 	pan1 := 0.5
 	tilt1 := -1.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos1, pan1, tilt1, "ray1") // Target 1
+	tracker.addAbsoluteCalibrationMeasurement(targetPos1, pan1, tilt1, "ray1") // Target 1
 
 	targetPos2 := r3.Vector{X: 0, Y: 200, Z: 0} // Target directly along +Y axis
 	pan2 := 0.5
 	tilt2 := -1.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos2, pan2, tilt2, "ray1") // Target 2
+	tracker.addAbsoluteCalibrationMeasurement(targetPos2, pan2, tilt2, "ray1") // Target 2
 
 	// Now we move the target to the second position and record the pan and tilt angles
 	targetPos3 := r3.Vector{X: 100, Y: 0, Z: 0} // Target directly along +X axis
 	pan3 := 0.0
 	tilt3 := -1.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos3, pan3, tilt3, "ray2") // Target 3
+	tracker.addAbsoluteCalibrationMeasurement(targetPos3, pan3, tilt3, "ray2") // Target 3
 
 	targetPos4 := r3.Vector{X: 200, Y: 0, Z: 0} // Target directly along +X axis
 	pan4 := 0.0
 	tilt4 := -1.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos4, pan4, tilt4, "ray2") // Target 4
+	tracker.addAbsoluteCalibrationMeasurement(targetPos4, pan4, tilt4, "ray2") // Target 4
 
 	// Get the rays from the measurements
 	measuremntsRay1, _ := tracker.getAbsoluteCalibrationMeasurements("ray1")
-	ray1, _ := tracker.calculateRayFromMeasurements(measuremntsRay1)
+	if len(measuremntsRay1.Measurements) != 2 {
+		t.Errorf("Expected 2 target positions for ray1, got %d", len(measuremntsRay1.Measurements))
+	}
+	ray1, _ := calculateRayFromMeasurements(measuremntsRay1)
 	t.Logf("Ray1: %+v", ray1)
 	// The origin of the ray is the centroid of the target positions
 	expectedRay1Origin := r3.Vector{X: calculateAverage([]float64{targetPos1.X, targetPos2.X}), Y: calculateAverage([]float64{targetPos1.Y, targetPos2.Y}), Z: calculateAverage([]float64{targetPos1.Z, targetPos2.Z})}
-	if ray1.Ray.Origin.X != expectedRay1Origin.X || ray1.Ray.Origin.Y != expectedRay1Origin.Y || ray1.Ray.Origin.Z != expectedRay1Origin.Z {
+	if expectedRay1Origin.Distance(ray1.Ray.Origin) > 0.001 {
 		t.Errorf("Expected ray1 origin to be %+v, got %+v", expectedRay1Origin, ray1.Ray.Origin)
 	}
 	// The direction of the ray is the unit vector of the target positions
@@ -64,7 +66,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 	}
 
 	measuremntsRay2, _ := tracker.getAbsoluteCalibrationMeasurements("ray2")
-	ray2, _ := tracker.calculateRayFromMeasurements(measuremntsRay2)
+	ray2, _ := calculateRayFromMeasurements(measuremntsRay2)
 	t.Logf("Ray2: %+v", ray2)
 	expectedRay2Origin := r3.Vector{X: calculateAverage([]float64{targetPos3.X, targetPos4.X}), Y: calculateAverage([]float64{targetPos3.Y, targetPos4.Y}), Z: calculateAverage([]float64{targetPos3.Z, targetPos4.Z})}
 	if ray2.Ray.Origin.X != expectedRay2Origin.X || ray2.Ray.Origin.Y != expectedRay2Origin.Y || ray2.Ray.Origin.Z != expectedRay2Origin.Z {
@@ -76,7 +78,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 	}
 
 	// Calculate the camera's position and pan plane from the measurements, a pan value of 0 should be aligned with the +X axis of the panPlane
-	cameraPos, panPlane, pan0Direction, zeroPanTiltDirection := tracker.getCameraPosAndPanPlane(ray1, ray2)
+	cameraPos, panPlane, pan0Direction, zeroPanTiltDirection := tracker.calculateCameraPositionAndPanPlane(ray1, ray2)
 	tracker.absoluteCalibrationPan0Reference = pan0Direction // Store for predictPanTiltAbsolute
 	t.Logf("Camera position: %+v", cameraPos)
 	t.Logf("Pan plane: %+v", panPlane)
@@ -98,7 +100,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 	// Pan value of 0 is aligned with the +X axis of the panPlane
 	// Tilt value of -1 means the camera is perfectly aligned with the XY plane, so the predicted pan and tilt should be 0 and -1
 	targetPos_P0_T0 := r3.Vector{X: 100, Y: 0, Z: 0}
-	P0_Predicted, T0_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P0_T0, cameraPos, panPlane, pan0Direction)
+	P0_Predicted, T0_Predicted := tracker.predictPanTiltAbsolute(targetPos_P0_T0, cameraPos, panPlane, pan0Direction)
 	Pan_expected := 0.0
 	Tilt_expected := -1.0
 	if math.Abs(P0_Predicted-Pan_expected) > 0.001 {
@@ -110,7 +112,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 
 	// Pan value of 90 degrees is aligned with the +Y axis of the panPlane
 	targetPos_P90_T0 := r3.Vector{X: 0, Y: 100, Z: 0}
-	P90_Predicted, T0_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P90_T0, cameraPos, panPlane, pan0Direction)
+	P90_Predicted, T0_Predicted := tracker.predictPanTiltAbsolute(targetPos_P90_T0, cameraPos, panPlane, pan0Direction)
 	Pan_expected = 0.5
 	Tilt_expected = -1.0
 	if math.Abs(P90_Predicted-Pan_expected) > 0.001 {
@@ -122,7 +124,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 
 	// Target at 45 degrees from the xy plane and 90 degrees from the x axis, its tilt should be 0.5 and its pan should be 0.5
 	targetPos_P90_T45 := r3.Vector{X: 0, Y: 100, Z: 100}
-	P90_Predicted, T45_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P90_T45, cameraPos, panPlane, pan0Direction)
+	P90_Predicted, T45_Predicted := tracker.predictPanTiltAbsolute(targetPos_P90_T45, cameraPos, panPlane, pan0Direction)
 	if math.Abs(P90_Predicted-0.5) > 0.001 {
 		t.Errorf("Expected pan predicted to be 0.5, got %.3f", P90_Predicted)
 	}
@@ -132,7 +134,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 
 	// Target at 60 degrees from the xy plane, its tilt should be 0.3333333333333333 and its pan should be 0
 	targetPos_P0_T60 := r3.Vector{X: 100, Y: 0, Z: 173.20508075688772}
-	P0_Predicted, T60_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P0_T60, cameraPos, panPlane, pan0Direction)
+	P0_Predicted, T60_Predicted := tracker.predictPanTiltAbsolute(targetPos_P0_T60, cameraPos, panPlane, pan0Direction)
 	if math.Abs(P0_Predicted-0.0) > 0.001 {
 		t.Errorf("Expected pan predicted to be 0.0, got %.3f", P0_Predicted)
 	}
@@ -142,7 +144,7 @@ func TestCalculateCameraPosAndPanPlaneIdealCameraWithFullRange(t *testing.T) {
 
 	// Target at 45 degrees from the xy plane, its tilt should be 0 and its pan should be 0
 	targetPos_PMinus90_T45 := r3.Vector{X: 0, Y: -100, Z: 100}
-	PMinus90_Predicted, T45_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_PMinus90_T45, cameraPos, panPlane, pan0Direction)
+	PMinus90_Predicted, T45_Predicted := tracker.predictPanTiltAbsolute(targetPos_PMinus90_T45, cameraPos, panPlane, pan0Direction)
 	if math.Abs(PMinus90_Predicted-(-0.5)) > 0.001 {
 		t.Errorf("Expected pan predicted to be -0.5, got %.3f", PMinus90_Predicted)
 	}
@@ -163,28 +165,28 @@ func TestCalculateCameraPosAndPanPlaneReducedPanTiltRange(t *testing.T) {
 
 	targetPos1 := r3.Vector{X: 0, Y: 100, Z: 8.748866352590167} // Target directly along +Y axis, with a tilt of 5 degrees
 	pan1 := 0.5
-	tilt1 := 0.0                                                                                     // In this case, given the reduced range, 5 degrees of tilt corresponds to a pan value of 0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos1, pan1, tilt1, "ray1") // Target 1
+	tilt1 := 0.0                                                               // In this case, given the reduced range, 5 degrees of tilt corresponds to a pan value of 0
+	tracker.addAbsoluteCalibrationMeasurement(targetPos1, pan1, tilt1, "ray1") // Target 1
 
 	targetPos2 := r3.Vector{X: 0, Y: 200, Z: 17.4977327052} // Target directly along +Y axis, with a tilt of 5 degrees
 	pan2 := 0.5
 	tilt2 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos2, pan2, tilt2, "ray1") // Target 2
+	tracker.addAbsoluteCalibrationMeasurement(targetPos2, pan2, tilt2, "ray1") // Target 2
 
 	// Now we move the target to the second position and record the pan and tilt angles
 	targetPos3 := r3.Vector{X: 100, Y: 0, Z: 8.748866352590167} // Target directly along +X axis, with a tilt of 5 degrees
 	pan3 := 0.0
 	tilt3 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos3, pan3, tilt3, "ray2") // Target 3
+	tracker.addAbsoluteCalibrationMeasurement(targetPos3, pan3, tilt3, "ray2") // Target 3
 
 	targetPos4 := r3.Vector{X: 200, Y: 0, Z: 17.4977327052} // Target directly along +X axis, with a tilt of 5 degrees
 	pan4 := 0.0
 	tilt4 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos4, pan4, tilt4, "ray2") // Target 4
+	tracker.addAbsoluteCalibrationMeasurement(targetPos4, pan4, tilt4, "ray2") // Target 4
 
 	// Get the rays from the measurements
 	measuremntsRay1, _ := tracker.getAbsoluteCalibrationMeasurements("ray1")
-	ray1, _ := tracker.calculateRayFromMeasurements(measuremntsRay1)
+	ray1, _ := calculateRayFromMeasurements(measuremntsRay1)
 	t.Logf("Ray1: %+v", ray1)
 	// The origin of the ray is the centroid of the target positions
 	expectedRay1Origin := r3.Vector{X: calculateAverage([]float64{targetPos1.X, targetPos2.X}), Y: calculateAverage([]float64{targetPos1.Y, targetPos2.Y}), Z: calculateAverage([]float64{targetPos1.Z, targetPos2.Z})}
@@ -198,7 +200,7 @@ func TestCalculateCameraPosAndPanPlaneReducedPanTiltRange(t *testing.T) {
 		t.Errorf("Expected ray1 direction to be %+v, got %+v", expectedRay1Direction, ray1.Ray.Direction)
 	}
 	measuremntsRay2, _ := tracker.getAbsoluteCalibrationMeasurements("ray2")
-	ray2, _ := tracker.calculateRayFromMeasurements(measuremntsRay2)
+	ray2, _ := calculateRayFromMeasurements(measuremntsRay2)
 	t.Logf("Ray2: %+v", ray2)
 	expectedRay2Origin := r3.Vector{X: calculateAverage([]float64{targetPos3.X, targetPos4.X}), Y: calculateAverage([]float64{targetPos3.Y, targetPos4.Y}), Z: calculateAverage([]float64{targetPos3.Z, targetPos4.Z})}
 	if ray2.Ray.Origin.X != expectedRay2Origin.X || ray2.Ray.Origin.Y != expectedRay2Origin.Y || ray2.Ray.Origin.Z != expectedRay2Origin.Z {
@@ -210,7 +212,7 @@ func TestCalculateCameraPosAndPanPlaneReducedPanTiltRange(t *testing.T) {
 	}
 
 	// Calculate the camera's position and pan plane from the measurements, a pan value of 0 should be aligned with the +X axis of the panPlane
-	cameraPos, panPlane, pan0Direction, zeroPanTiltDirection := tracker.getCameraPosAndPanPlane(ray1, ray2)
+	cameraPos, panPlane, pan0Direction, zeroPanTiltDirection := tracker.calculateCameraPositionAndPanPlane(ray1, ray2)
 	tracker.absoluteCalibrationPan0Reference = pan0Direction // Store for predictPanTiltAbsolute
 	t.Logf("Camera position: %+v", cameraPos)
 	t.Logf("Pan plane: %+v", panPlane)
@@ -237,7 +239,7 @@ func TestCalculateCameraPosAndPanPlaneReducedPanTiltRange(t *testing.T) {
 
 	// Pan value of 0 is aligned with the +X axis of the panPlane
 	targetPos_P0_TMinus1 := r3.Vector{X: 100, Y: 0, Z: 8.748866352590167}
-	P0_Predicted, TMinus1_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P0_TMinus1, cameraPos, panPlane, pan0Direction)
+	P0_Predicted, TMinus1_Predicted := tracker.predictPanTiltAbsolute(targetPos_P0_TMinus1, cameraPos, panPlane, pan0Direction)
 	Pan_expected := 0.0
 	Tilt_expected := -1.0
 	if math.Abs(P0_Predicted-Pan_expected) > 0.001 {
@@ -249,7 +251,7 @@ func TestCalculateCameraPosAndPanPlaneReducedPanTiltRange(t *testing.T) {
 
 	// Pan value of 90 degrees is aligned with the +Y axis of the panPlane
 	targetPos_P90_TMinus1 := r3.Vector{X: 0, Y: 100, Z: 8.748866352590167}
-	P90_Predicted, TMinus1_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P90_TMinus1, cameraPos, panPlane, pan0Direction)
+	P90_Predicted, TMinus1_Predicted := tracker.predictPanTiltAbsolute(targetPos_P90_TMinus1, cameraPos, panPlane, pan0Direction)
 	Pan_expected = 0.5
 	Tilt_expected = -1.0
 	// With horizontal pan plane, pan=90° should map to normalized 0.5 (for 355° range)
@@ -262,7 +264,7 @@ func TestCalculateCameraPosAndPanPlaneReducedPanTiltRange(t *testing.T) {
 
 	// Pan value of 180 degrees is aligned with the -X axis of the panPlane
 	targetPos_P180_TMinus1 := r3.Vector{X: -100, Y: 0, Z: 8.748866352590167}
-	P180_Predicted, TMinus1_Predicted := tracker.predictPanTiltAbsolute(context.Background(), targetPos_P180_TMinus1, cameraPos, panPlane, pan0Direction)
+	P180_Predicted, TMinus1_Predicted := tracker.predictPanTiltAbsolute(targetPos_P180_TMinus1, cameraPos, panPlane, pan0Direction)
 	Pan_expected = -0.986
 	Tilt_expected = -1.0
 	// With horizontal pan plane and 355° wrap-around range, pan=180° maps to approximately -0.986
@@ -308,33 +310,33 @@ func TestCalculateCameraPosAndPanPlaneCameraNotAtOrigin(t *testing.T) {
 	targetPos1 := r3.Vector{X: 200, Y: 200, Z: 200} // Target directly along +X axis, with a tilt of 5 degrees
 	pan1 := 0.5
 	tilt1 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos1, pan1, tilt1, "ray1") // Target 1
+	tracker.addAbsoluteCalibrationMeasurement(targetPos1, pan1, tilt1, "ray1") // Target 1
 
 	targetPos2 := r3.Vector{X: 300, Y: 300, Z: 300} // Target directly along +Y axis, with a tilt of 5 degrees
 	pan2 := 0.5
 	tilt2 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos2, pan2, tilt2, "ray1") // Target 2
+	tracker.addAbsoluteCalibrationMeasurement(targetPos2, pan2, tilt2, "ray1") // Target 2
 
 	targetPos3 := r3.Vector{X: 0, Y: 200, Z: 300} // Target directly along +X axis, with a tilt of 5 degrees
 	pan3 := 0.0
 	tilt3 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos3, pan3, tilt3, "ray2") // Target 3
+	tracker.addAbsoluteCalibrationMeasurement(targetPos3, pan3, tilt3, "ray2") // Target 3
 
 	targetPos4 := r3.Vector{X: -100, Y: 300, Z: 500} // Target directly along +X axis, with a tilt of 5 degrees
 	pan4 := 0.0
 	tilt4 := 0.0
-	tracker.addAbsoluteCalibrationMeasurement(context.Background(), targetPos4, pan4, tilt4, "ray2") // Target 4
+	tracker.addAbsoluteCalibrationMeasurement(targetPos4, pan4, tilt4, "ray2") // Target 4
 
 	// Get the rays from the measurements
 	measuremntsRay1, _ := tracker.getAbsoluteCalibrationMeasurements("ray1")
-	ray1, _ := tracker.calculateRayFromMeasurements(measuremntsRay1)
+	ray1, _ := calculateRayFromMeasurements(measuremntsRay1)
 	t.Logf("Ray1: %+v", ray1)
 	measuremntsRay2, _ := tracker.getAbsoluteCalibrationMeasurements("ray2")
-	ray2, _ := tracker.calculateRayFromMeasurements(measuremntsRay2)
+	ray2, _ := calculateRayFromMeasurements(measuremntsRay2)
 	t.Logf("Ray2: %+v", ray2)
 
 	// Calculate the camera's position and pan plane from the measurements
-	cameraPos, panPlane, pan0Direction, zeroPanTiltDirection := tracker.getCameraPosAndPanPlane(ray1, ray2)
+	cameraPos, panPlane, pan0Direction, zeroPanTiltDirection := tracker.calculateCameraPositionAndPanPlane(ray1, ray2)
 	t.Logf("Camera position: %+v", cameraPos)
 	t.Logf("Pan plane: %+v", panPlane)
 	t.Logf("Pan0 direction: %+v", pan0Direction)

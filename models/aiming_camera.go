@@ -1,20 +1,17 @@
 package models
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"image"
 	"image/color"
 	"image/draw"
-	"image/jpeg"
 
 	"go.viam.com/rdk/components/camera"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/spatialmath"
-	"go.viam.com/rdk/utils"
 )
 
 var (
@@ -91,23 +88,7 @@ func (s *aimingCamera) DoCommand(ctx context.Context, cmd map[string]interface{}
 }
 
 func (s *aimingCamera) GetImage(ctx context.Context) (image.Image, error) {
-	// Get image from underlying camera using Images method
-	imgs, _, err := s.underlyingCam.Images(ctx, []string{"color"}, nil)
-	if err != nil {
-		return nil, err
-	}
-	if len(imgs) == 0 {
-		return nil, errors.New("no images returned from underlying camera")
-	}
-
-	// Get the actual image from the NamedImage
-	img, err := imgs[0].Image(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Draw crosshair on the image
-	return s.drawCrosshair(img), nil
+	return nil, errors.New("get image not implemented")
 }
 
 // drawCrosshair draws a crosshair at the center of the image
@@ -150,21 +131,7 @@ func (s *aimingCamera) Geometries(ctx context.Context, extra map[string]interfac
 }
 
 func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
-	mimetypes := []string{mimeType}
-	imgs, _, err := s.underlyingCam.Images(ctx, mimetypes, extra)
-	if err != nil {
-		return nil, camera.ImageMetadata{}, err
-	}
-	img, err := imgs[0].Image(ctx)
-	if err != nil {
-		return nil, camera.ImageMetadata{}, err
-	}
-	imgWithCrosshair := s.drawCrosshair(img)
-	var b bytes.Buffer
-	if err := jpeg.Encode(&b, imgWithCrosshair, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, camera.ImageMetadata{}, err
-	}
-	return b.Bytes(), camera.ImageMetadata{MimeType: utils.MimeTypeJPEG}, nil
+	return nil, camera.ImageMetadata{}, errors.New("single image retrieval not implemented; use Images() instead")
 }
 
 func (s *aimingCamera) Images(ctx context.Context, mimeTypes []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {

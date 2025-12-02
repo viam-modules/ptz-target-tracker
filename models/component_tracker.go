@@ -12,12 +12,12 @@ import (
 	"github.com/erh/vmodutils"
 	"github.com/erh/vmodutils/touch"
 	"github.com/golang/geo/r3"
-	"github.com/stretchr/testify/assert"
 	"go.viam.com/rdk/components/generic"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
 	"go.viam.com/rdk/robot"
+	"go.viam.com/rdk/robot/framesystem"
 	genericservice "go.viam.com/rdk/services/generic"
 	"gonum.org/v1/gonum/mat"
 )
@@ -191,6 +191,7 @@ type Calibration struct {
 }
 type componentTracker struct {
 	resource.AlwaysRebuild
+	resource.TriviallyReconfigurable
 
 	name resource.Name
 
@@ -202,6 +203,7 @@ type componentTracker struct {
 	running    bool
 
 	robotClient         robot.Robot
+	frameSystemService  framesystem.Service
 	targetComponentName string
 	onvifPTZClientName  string
 
@@ -232,11 +234,6 @@ type componentTracker struct {
 	absoluteCalibrationPanPlane        r3.Vector
 	absoluteCalibrationPan0Reference   r3.Vector                                     // Direction in panPlane that corresponds to pan=0
 	absoluteCalibrationRayMeasurements map[string]AbsoluteCalibrationRayMeasurements // rayId -> measurements
-}
-
-// Errorf implements assert.TestingT.
-func (s *componentTracker) Errorf(format string, args ...interface{}) {
-	s.logger.Errorf(format, args...)
 }
 
 // Close implements resource.Resource.
@@ -309,11 +306,16 @@ func newComponentTracker(ctx context.Context, deps resource.Dependencies, rawCon
 func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name resource.Name, conf *Config, logger logging.Logger) (resource.Resource, error) {
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-
 	robotClient, err := vmodutils.ConnectToMachineFromEnv(ctx, logger)
 	if err != nil {
 		cancelFunc()
 		return nil, fmt.Errorf("failed to connect to robot: %w", err)
+	}
+
+	frameSystemService, err := framesystem.FromDependencies(deps)
+	if err != nil {
+		cancelFunc()
+		return nil, fmt.Errorf("failed to get frame system service: %w", err)
 	}
 
 	s := &componentTracker{
@@ -323,6 +325,7 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 		cancelCtx:                    cancelCtx,
 		cancelFunc:                   cancelFunc,
 		robotClient:                  robotClient,
+		frameSystemService:           frameSystemService,
 		targetComponentName:          conf.TargetComponentName,
 		onvifPTZClientName:           conf.OnvifPTZClientName,
 		panSpeed:                     conf.PanSpeed,
@@ -408,9 +411,9 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 
 	case "add-calibration-sample":
 		// Get current target position from arm
-		targetPose := t.getTargetPose(ctx)
-		if targetPose == nil {
-			return nil, errors.New("failed to get target pose")
+		targetPose, err := t.getTargetPose(ctx)
+		if err != nil {
+			return nil, err
 		}
 		targetPos := targetPose.Pose().Point()
 
@@ -708,43 +711,43 @@ func (t *componentTracker) loadSamplesFromJSONFile(filename string) ([]TrackingS
 	return samples, nil
 }
 
-func (t *componentTracker) getTargetPose(ctx context.Context) *referenceframe.PoseInFrame {
-	fsc, err := t.robotClient.FrameSystemConfig(ctx)
+func (t *componentTracker) getTargetPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
+	fsc, err := t.frameSystemService.FrameSystemConfig(ctx)
 	if err != nil {
 		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil
+		return nil, err
 	}
 	targetFramePart := touch.FindPart(fsc, t.targetComponentName)
 	if targetFramePart == nil {
 		t.logger.Errorf("can't find frame for %v", t.targetComponentName)
-		return nil
+		return nil, fmt.Errorf("can't find frame for %v", t.targetComponentName)
 	}
-	targetPose, err := t.robotClient.GetPose(ctx, targetFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
+	targetPose, err := t.frameSystemService.GetPose(ctx, targetFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
 		t.logger.Errorf("Failed to get pose: %v", err)
-		return nil
+		return nil, err
 	}
 
-	return targetPose
+	return targetPose, nil
 }
 
-func (t *componentTracker) getCameraPose(ctx context.Context) *referenceframe.PoseInFrame {
-	fsc, err := t.robotClient.FrameSystemConfig(ctx)
+func (t *componentTracker) getCameraPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
+	fsc, err := t.frameSystemService.FrameSystemConfig(ctx)
 	if err != nil {
 		t.logger.Error("Failed to get frame system config: %v", err)
-		return nil
+		return nil, err
 	}
 	cameraFramePart := touch.FindPart(fsc, t.cfg.PTZCameraName)
 	if cameraFramePart == nil {
 		t.logger.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
-		return nil
+		return nil, fmt.Errorf("can't find frame for %v", t.cfg.PTZCameraName)
 	}
-	cameraPose, err := t.robotClient.GetPose(ctx, cameraFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
+	cameraPose, err := t.frameSystemService.GetPose(ctx, cameraFramePart.FrameConfig.Name(), "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
 		t.logger.Errorf("Failed to get pose: %v", err)
-		return nil
+		return nil, err
 	}
-	return cameraPose
+	return cameraPose, nil
 }
 
 func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (float64, float64, float64, error) {
@@ -1116,17 +1119,16 @@ func (t *componentTracker) predictPanTiltPolynomial(pos r3.Vector) (pan, tilt fl
 }
 
 func (t *componentTracker) predictPanTiltZoom(ctx context.Context, pos r3.Vector) (pan, tilt, zoom float64, err error) {
-	cameraPose := t.getCameraPose(ctx)
-	if cameraPose == nil {
-		return 0, 0, 0, errors.New("failed to get camera pose")
+	cameraPose, err := t.getCameraPose(ctx)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("failed to get camera pose: %w", err)
 	}
 	cameraPos := cameraPose.Pose().Point()
 	switch t.cfg.TrackingMode {
 	case "polynomial-fit":
 		pan, tilt = t.predictPanTiltPolynomial(pos)
 	case "absolute-position":
-		pan, tilt = t.predictPanTiltAbsolute(ctx, pos, cameraPos, t.absoluteCalibrationPanPlane, t.absoluteCalibrationPan0Reference)
-	default:
+		pan, tilt = t.predictPanTiltAbsolute(pos, cameraPos, t.absoluteCalibrationPanPlane, t.absoluteCalibrationPan0Reference)
 		return 0, 0, 0, errors.New("invalid tracking mode: " + t.cfg.TrackingMode)
 	}
 	zoom = t.calculateZoom(ctx, pos, cameraPos)
@@ -1167,9 +1169,9 @@ func (t *componentTracker) trackTarget(ctx context.Context) error {
 		return errors.New("not calibrated - run fit-polynomial-calibration first")
 	}
 
-	targetPose := t.getTargetPose(ctx)
-	if targetPose == nil {
-		return errors.New("failed to get target pose")
+	targetPose, err := t.getTargetPose(ctx)
+	if err != nil {
+		return err
 	}
 	targetPos := targetPose.Pose().Point()
 
@@ -1187,7 +1189,7 @@ func (t *componentTracker) trackTarget(ctx context.Context) error {
 	return t.sendAbsoluteMove(ctx, pan, tilt, zoom)
 }
 
-func (t *componentTracker) addAbsoluteCalibrationMeasurement(ctx context.Context, targetPos r3.Vector, pan float64, tilt float64, rayId string) error {
+func (t *componentTracker) addAbsoluteCalibrationMeasurement(targetPos r3.Vector, pan float64, tilt float64, rayId string) error {
 	measurements, ok := t.absoluteCalibrationRayMeasurements[rayId]
 	if !ok {
 		measurements = AbsoluteCalibrationRayMeasurements{
@@ -1219,7 +1221,25 @@ func calculateAverage(values []float64) float64 {
 	}
 	return sum / float64(len(values))
 }
-func (t *componentTracker) calculateRayFromMeasurements(measurements AbsoluteCalibrationRayMeasurements) (rayPanTilt RayPanTilt, err error) {
+func calculateCentroid(points []r3.Vector) r3.Vector {
+
+	XValues := make([]float64, 0, len(points))
+	YValues := make([]float64, 0, len(points))
+	ZValues := make([]float64, 0, len(points))
+
+	for _, p := range points {
+		XValues = append(XValues, p.X)
+		YValues = append(YValues, p.Y)
+		ZValues = append(ZValues, p.Z)
+	}
+	centroid := r3.Vector{
+		X: calculateAverage(XValues),
+		Y: calculateAverage(YValues),
+		Z: calculateAverage(ZValues),
+	}
+	return centroid
+}
+func calculateRayFromMeasurements(measurements AbsoluteCalibrationRayMeasurements) (rayPanTilt RayPanTilt, err error) {
 	rayMeasurements := measurements.Measurements
 	targetPositions := make([]r3.Vector, len(rayMeasurements))
 	for i, measurement := range rayMeasurements {
@@ -1239,12 +1259,10 @@ func (t *componentTracker) calculateRayFromMeasurements(measurements AbsoluteCal
 	// No tilt/pan value should be more than 0.001 from the average
 	for _, measurement := range rayMeasurements {
 		if math.Abs(measurement.Pan-averagePan) > 0.001 {
-			t.logger.Errorf("Pan value is not within 0.001 of the average: measurement.Pan: %.4f, averagePan: %.4f", measurement.Pan, averagePan)
 			err = errors.New("pan value is not within 0.001 of the average")
 			return RayPanTilt{}, err
 		}
 		if math.Abs(measurement.Tilt-averageTilt) > 0.001 {
-			t.logger.Errorf("Tilt value is not within 0.001 of the average: measurement.Tilt: %.4f, averageTilt: %.4f", measurement.Tilt, averageTilt)
 			err = errors.New("tilt value is not within 0.001 of the average")
 			return RayPanTilt{}, err
 		}
@@ -1253,31 +1271,7 @@ func (t *componentTracker) calculateRayFromMeasurements(measurements AbsoluteCal
 	return RayPanTilt{Pan: averagePan, Tilt: averageTilt, Ray: ray}, nil
 }
 
-func (t *componentTracker) getCameraPosAndPanPlane(rayPanTilt1, rayPanTilt2 RayPanTilt) (cameraPos r3.Vector, panPlane r3.Vector, zeroPanReference r3.Vector, zeroPanTiltReference r3.Vector) {
-	ray1 := rayPanTilt1.Ray
-	ray2 := rayPanTilt2.Ray
-	cameraPos, panPlane = t.getAbsoluteCalibrationCameraPositionAndPanPlane(ray1, ray2)
-	assert.Equal(t, panPlane.Z, 1.0, "panPlane normal should be (0, 0, 1)")
-	// The zero pan reference is panPlane projection ofthe vector that points from the camera position to the point where the camera is pointing at with pan=0
-	zeroPanReference = r3.Vector{X: 1, Y: 0, Z: 0}
-
-	// Zero tilt reference is the vector that points from the camera position to the point where the camera is pointing at with tilt=0, this depends on the minDeg and maxDeg values.
-	// We assume that a pan value of 0 is the midpoint of the pan range, so we can calculate the zero tilt reference as the vector that points from the camera position to the point where the camera is pointing at with pan=0
-	tiltZeroDeg := (t.tiltMaxDeg + t.tiltMinDeg) / 2.0
-	// Convert tiltZeroDeg to radians
-	tiltZeroRad := tiltZeroDeg * math.Pi / 180.0
-	// Now orient this vector to point to the zero tilt reference
-	tiltZeroReference := r3.Vector{
-		X: math.Cos(tiltZeroRad),
-		Y: 0,
-		Z: math.Sin(tiltZeroRad),
-	}
-	// Normalize the tilt zero reference
-	tiltZeroReference = tiltZeroReference.Normalize()
-	return cameraPos, panPlane, zeroPanReference, tiltZeroReference
-}
-
-func (t *componentTracker) predictPanTiltAbsolute(ctx context.Context, pos r3.Vector, cameraPos r3.Vector, panPlane r3.Vector, zeroPanReference r3.Vector) (pan, tilt float64) {
+func (t *componentTracker) predictPanTiltAbsolute(pos r3.Vector, cameraPos r3.Vector, panPlane r3.Vector, panZeroDirection r3.Vector) (pan, tilt float64) {
 	// Normalize panPlane normal (this is in camera/panPlane coordinate frame)
 	panPlaneLen := math.Sqrt(panPlane.X*panPlane.X + panPlane.Y*panPlane.Y + panPlane.Z*panPlane.Z)
 	if panPlaneLen < 1e-10 {
@@ -1302,7 +1296,7 @@ func (t *componentTracker) predictPanTiltAbsolute(ctx context.Context, pos r3.Ve
 	// Transform direction from world coordinates to panPlane coordinate system
 	// Establish orthonormal basis: panPlaneNormal = Z-axis, pan0Reference = X-axis
 	// pan0Reference is already projected onto panPlane and normalized, so use it directly as panPlaneX
-	panPlaneX := zeroPanReference
+	panPlaneX := panZeroDirection
 
 	// Ensure panPlaneX is normalized (should already be, but check anyway)
 	panPlaneXLen := math.Sqrt(panPlaneX.X*panPlaneX.X + panPlaneX.Y*panPlaneX.Y + panPlaneX.Z*panPlaneX.Z)
@@ -1456,7 +1450,9 @@ The camera position is the point where the two rays intersect
 The pan plane is the plane that is perpendicular to the two rays and contains the camera position at its origin such that the pan value of 0 is aligned with the +X axis of the pan plane
 */
 
-func (t *componentTracker) getAbsoluteCalibrationCameraPositionAndPanPlane(ray1 Ray, ray2 Ray) (cameraPos r3.Vector, panPlane r3.Vector) {
+func (t *componentTracker) calculateCameraPositionAndPanPlane(rayPanTilt1 RayPanTilt, rayPanTilt2 RayPanTilt) (cameraPos r3.Vector, panPlane r3.Vector, panZeroDirection r3.Vector, tiltZeroDirection r3.Vector) {
+	ray1 := rayPanTilt1.Ray
+	ray2 := rayPanTilt2.Ray
 	// Calculate the closest points on the two rays (not assuming intersection)
 	// Ray: P = O + t*D, minimize |(O1 + t1*D1) - (O2 + t2*D2)|
 	// Analytical solution for t1 and t2:
@@ -1495,7 +1491,24 @@ func (t *componentTracker) getAbsoluteCalibrationCameraPositionAndPanPlane(ray1 
 	// The pan plane is always horizontal (normal = (0, 0, 1))
 	// This simplifies calculations and makes tilt independent of the measurement angles
 	panPlane = r3.Vector{X: 0, Y: 0, Z: 1}
-	return cameraPos, panPlane
+
+	// The zero pan reference is panPlane projection ofthe vector that points from the camera position to the point where the camera is pointing at with pan=0
+	panZeroDirection = r3.Vector{X: 1, Y: 0, Z: 0}
+
+	// Zero tilt reference is the vector that points from the camera position to the point where the camera is pointing at with tilt=0, this depends on the minDeg and maxDeg values.
+	// We assume that a pan value of 0 is the midpoint of the pan range, so we can calculate the zero tilt reference as the vector that points from the camera position to the point where the camera is pointing at with pan=0
+	tiltZeroDeg := (t.tiltMaxDeg + t.tiltMinDeg) / 2.0
+	// Convert tiltZeroDeg to radians
+	tiltZeroRad := tiltZeroDeg * math.Pi / 180.0
+	// Now orient this vector to point to the zero tilt reference
+	tiltZeroDirection = r3.Vector{
+		X: math.Cos(tiltZeroRad),
+		Y: 0,
+		Z: math.Sin(tiltZeroRad),
+	}
+	// Normalize the tilt zero reference
+	tiltZeroDirection = tiltZeroDirection.Normalize()
+	return cameraPos, panPlane, panZeroDirection, tiltZeroDirection
 }
 
 // FitLine3D fits a 3D line to a set of points using Principal Component Analysis (PCA).
@@ -1505,11 +1518,7 @@ func FitLine3D(points []r3.Vector) (Ray, float64) {
 		return Ray{}, 0
 	}
 
-	n := len(points)
-
 	// Step 1: Calculate centroid (mean point)
-	var centroid r3.Vector
-
 	xValues := make([]float64, len(points))
 	yValues := make([]float64, len(points))
 	zValues := make([]float64, len(points))
@@ -1519,11 +1528,10 @@ func FitLine3D(points []r3.Vector) (Ray, float64) {
 		zValues[i] = p.Z
 	}
 
-	centroid.X = calculateAverage(xValues)
-	centroid.Y = calculateAverage(yValues)
-	centroid.Z = calculateAverage(zValues)
+	centroid := calculateCentroid(points)
 
 	// Step 2: Build mean-centered data matrix (n x 3)
+	n := len(points)
 	data := mat.NewDense(n, 3, nil)
 	for i, p := range points {
 		data.Set(i, 0, p.X-centroid.X)
