@@ -1,11 +1,14 @@
 package models
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"image"
 	"image/color"
 	"image/draw"
+	"image/jpeg"
+	"image/png"
 
 	"go.viam.com/rdk/components/camera"
 	"go.viam.com/rdk/logging"
@@ -80,10 +83,6 @@ func (s *aimingCamera) DoCommand(ctx context.Context, cmd map[string]interface{}
 	return nil, errors.New("not implemented")
 }
 
-func (s *aimingCamera) GetImage(ctx context.Context) (image.Image, error) {
-	return nil, errors.New("get image not implemented")
-}
-
 // drawCrosshair draws a crosshair at the center of the image
 func (s *aimingCamera) drawCrosshair(img image.Image) image.Image {
 	bounds := img.Bounds()
@@ -119,7 +118,38 @@ func (s *aimingCamera) Geometries(ctx context.Context, extra map[string]interfac
 }
 
 func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
-	return nil, camera.ImageMetadata{}, errors.New("single image retrieval not implemented; use Images() instead")
+	// Get images from underlying camera
+	img, meta, err := s.underlyingCam.Image(ctx, mimeType, extra)
+	if err != nil {
+		errorMsg := "Error when requesting Image from underlying camera: " + err.Error()
+		return nil, camera.ImageMetadata{}, errors.New(errorMsg)
+	}
+
+	// Decode image
+	decodedImg, _, err := image.Decode(bytes.NewReader(img))
+	if err != nil {
+		errorMsg := "Error when decoding image: " + err.Error()
+		return nil, camera.ImageMetadata{}, errors.New(errorMsg)
+	}
+
+	// Draw crosshair on it
+	imgWithCrosshair := s.drawCrosshair(decodedImg)
+
+	// Encode back to []byte
+	var buf bytes.Buffer
+	switch mimeType {
+	case "image/png":
+		err = png.Encode(&buf, imgWithCrosshair)
+	default:
+		// Default to JPEG for unknown types or explicit JPEG request
+		err = jpeg.Encode(&buf, imgWithCrosshair, nil)
+	}
+	if err != nil {
+		errorMsg := "Error when encoding image with crosshair: " + err.Error()
+		return nil, camera.ImageMetadata{}, errors.New(errorMsg)
+	}
+
+	return buf.Bytes(), meta, nil
 }
 
 func (s *aimingCamera) Images(ctx context.Context, filterSourceNames []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
