@@ -172,66 +172,6 @@ func (s *componentTracker) Close(ctx context.Context) error {
 	return nil
 }
 
-// Reconfigure implements resource.Resource.
-// Subtle: this method shadows the method (AlwaysRebuild).Reconfigure of poseTracker.AlwaysRebuild.
-func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Dependencies, rawConf resource.Config) error {
-	conf, err := resource.NativeConfig[*Config](rawConf)
-	if err != nil {
-		return err
-	}
-
-	s.workerMutex.Lock()
-	defer s.workerMutex.Unlock()
-
-	wasRunning := s.workerRunning.Load()
-	if wasRunning {
-		s.worker.Stop()
-		s.workerRunning.Store(false)
-		s.worker = utils.NewBackgroundStoppableWorkers()
-	}
-	// If ONVIF PTZ client name has changed, update the resource
-	if s.cfg.OnvifPTZClientName != conf.OnvifPTZClientName {
-		onvifPTZClientName := resource.NewName(generic.API, conf.OnvifPTZClientName)
-		onvifPTZClient, err := deps.GetResource(onvifPTZClientName)
-		if err != nil {
-			return fmt.Errorf("failed to get ONVIF PTZ client resource: %w", err)
-		}
-		s.onvifPTZClient = onvifPTZClient
-	}
-	// Update the config struct so TrackingMode and other fields are available
-	s.cfg = conf
-	s.targetComponentName = conf.TargetComponentName
-	s.updateRateHz = conf.UpdateRateHz
-	s.panMinDeg = conf.PanMinDeg
-	s.panMaxDeg = conf.PanMaxDeg
-	s.tiltMinDeg = conf.TiltMinDeg
-	s.tiltMaxDeg = conf.TiltMaxDeg
-	s.deadzone = conf.Deadzone
-	s.minZoomDistance = conf.MinZoomDistanceMM
-	s.maxZoomDistance = conf.MaxZoomDistanceMM
-	s.minZoomValue = 0.0
-	s.maxZoomValue = 1.0
-
-	// Copy calibration if provided
-	s.logger.Debugf("Reconfiguring component tracker with new config: %+v", conf)
-	if conf.Calibration.IsCalibrated && len(conf.Calibration.PanPolyCoeffs) > 0 {
-		s.calibration = conf.Calibration
-		s.logger.Infof("Updated calibration during reconfigure: %+v", s.calibration)
-	}
-
-	if wasRunning {
-		s.logger.Info("PTZ pose tracker restarted")
-		s.worker.Add(func(workerCtx context.Context) {
-			timeoutCtx, cancel := context.WithTimeout(workerCtx, time.Hour*24)
-			defer cancel()
-			defer s.workerRunning.Store(false)
-			s.workerRunning.Store(true)
-			s.trackingLoop(timeoutCtx)
-		})
-	}
-	return nil
-}
-
 func newComponentTracker(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (resource.Resource, error) {
 	conf, err := resource.NativeConfig[*Config](rawConf)
 	if err != nil {
