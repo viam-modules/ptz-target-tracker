@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -134,8 +135,6 @@ type Calibration struct {
 }
 type componentTracker struct {
 	resource.AlwaysRebuild
-	resource.TriviallyReconfigurable
-
 	name resource.Name
 
 	logger logging.Logger
@@ -165,9 +164,10 @@ type componentTracker struct {
 	trackingMode                     string
 	absoluteCalibrationPanPlane      r3.Vector
 	absoluteCalibrationPan0Reference r3.Vector // Direction in panPlane that corresponds to pan=0
-	worker                           *utils.StoppableWorkers
-	workerRunning                    atomic.Bool
-	workerMutex                      sync.Mutex
+
+	workerMutex   sync.Mutex
+	worker        *utils.StoppableWorkers
+	workerRunning atomic.Bool
 }
 
 // Close implements resource.Resource.
@@ -231,11 +231,11 @@ func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Depend
 
 	if wasRunning {
 		s.logger.Info("PTZ pose tracker restarted")
-		s.workerRunning.Store(true)
 		s.worker.Add(func(workerCtx context.Context) {
 			timeoutCtx, cancel := context.WithTimeout(workerCtx, time.Hour*24)
 			defer cancel()
 			defer s.workerRunning.Store(false)
+			s.workerRunning.Store(true)
 			s.trackingLoop(timeoutCtx)
 		})
 	}
@@ -252,6 +252,8 @@ func newComponentTracker(ctx context.Context, deps resource.Dependencies, rawCon
 }
 
 func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name resource.Name, conf *Config, logger logging.Logger) (resource.Resource, error) {
+	configJSON, _ := json.MarshalIndent(conf, "", "  ")
+	logger.Debugf("Creating Component with the following config:\n%s", configJSON)
 
 	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 	robotClient, err := vmodutils.ConnectToMachineFromEnv(ctx, logger)
@@ -312,15 +314,15 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 	}
 
 	if conf.EnableOnStart {
-		s.logger.Info("PTZ component tracker started")
-		s.workerMutex.Lock()
-		defer s.workerMutex.Unlock()
+		s.logger.Info("Starting PTZ component tracker on start")
 		s.worker.Add(func(workerCtx context.Context) {
 			timeoutCtx, cancel := context.WithTimeout(workerCtx, time.Hour*24)
 			defer cancel()
 			defer s.workerRunning.Store(false)
+			s.workerRunning.Store(true)
 			s.trackingLoop(timeoutCtx)
 		})
+		s.logger.Info("PTZ component tracker started")
 	}
 
 	return s, nil
@@ -332,45 +334,10 @@ func (s *componentTracker) Name() resource.Name {
 
 func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	t.logger.Infof("DoCommand: %+v", cmd)
+	if t.cfg.EnableOnStart {
+		return nil, errors.New("component is already running on start")
+	}
 	switch cmd["command"] {
-	case "start":
-		t.workerMutex.Lock()
-		defer t.workerMutex.Unlock()
-		if t.workerRunning.Load() {
-			return map[string]interface{}{"status": "already_running"}, nil
-		}
-		// Cancel old context and create new one for fresh start
-		if t.cancelFunc != nil {
-			t.cancelFunc()
-		}
-		t.cancelCtx, t.cancelFunc = context.WithCancel(context.Background())
-		t.workerRunning.Store(true)
-		t.worker.Add(func(workerCtx context.Context) {
-			timeoutCtx, cancel := context.WithTimeout(workerCtx, time.Hour*24)
-			defer cancel()
-			defer t.workerRunning.Store(false)
-			t.trackingLoop(timeoutCtx)
-		})
-		return map[string]interface{}{"status": "running"}, nil
-
-	case "stop":
-		t.workerMutex.Lock()
-		defer t.workerMutex.Unlock()
-		if t.workerRunning.Load() {
-			t.logger.Warn("stopping worker")
-			// stop the running worker
-			t.worker.Stop()
-			t.worker = utils.NewBackgroundStoppableWorkers()
-		}
-		if !t.workerRunning.Load() {
-			return map[string]interface{}{"status": "already_stopped"}, nil
-		}
-		t.workerRunning.Store(false)
-		if t.cancelFunc != nil {
-			t.cancelFunc() // Cancel context to exit the loop
-		}
-		return map[string]interface{}{"status": "stopped"}, nil
-
 	case "get-calibration-samples":
 		return map[string]interface{}{
 			"calibration-samples": t.samples,
@@ -456,7 +423,7 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 
 	case "push-sample":
 		// Get current target position from arm
-		targetPose, err := t.getTargetPose(ctx)
+		targetPose, err := t.getPose(ctx, t.targetComponentName)
 		if err != nil {
 			return nil, err
 		}
@@ -534,23 +501,13 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 	}
 }
 
-func (t *componentTracker) getTargetPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
-	targetPose, err := t.frameSystemService.GetPose(ctx, t.targetComponentName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
+func (t *componentTracker) getPose(ctx context.Context, componentName string) (*referenceframe.PoseInFrame, error) {
+	pose, err := t.frameSystemService.GetPose(ctx, componentName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
-		t.logger.Errorf("Failed to get pose: %v", err)
+		t.logger.Errorf("Failed to get pose for component %s: %v", componentName, err)
 		return nil, err
 	}
-
-	return targetPose, nil
-}
-
-func (t *componentTracker) getCameraPose(ctx context.Context) (*referenceframe.PoseInFrame, error) {
-	cameraPose, err := t.frameSystemService.GetPose(ctx, t.cfg.PTZCameraName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
-	if err != nil {
-		t.logger.Errorf("Failed to get pose: %v", err)
-		return nil, err
-	}
-	return cameraPose, nil
+	return pose, nil
 }
 
 func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (PTZValues, error) {
@@ -832,7 +789,7 @@ func (t *componentTracker) predictPanTiltPolynomial(pos r3.Vector) (pan, tilt fl
 }
 
 func (t *componentTracker) predictPanTiltZoom(ctx context.Context, targetPos r3.Vector) (ptzValues PTZValues, err error) {
-	cameraPose, err := t.getCameraPose(ctx)
+	cameraPose, err := t.getPose(ctx, t.cfg.PTZCameraName)
 	if err != nil {
 		return PTZValues{}, fmt.Errorf("failed to get camera pose: %w", err)
 	}
@@ -879,7 +836,7 @@ func (t *componentTracker) trackTarget(ctx context.Context) error {
 		return errors.New("not calibrated - run fit-polynomial-calibration first")
 	}
 
-	targetPose, err := t.getTargetPose(ctx)
+	targetPose, err := t.getPose(ctx, t.targetComponentName)
 	if err != nil {
 		return err
 	}
