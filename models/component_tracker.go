@@ -10,13 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/erh/vmodutils"
 	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/components/generic"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/referenceframe"
 	"go.viam.com/rdk/resource"
-	"go.viam.com/rdk/robot"
 	"go.viam.com/rdk/robot/framesystem"
 	genericservice "go.viam.com/rdk/services/generic"
 	"go.viam.com/utils"
@@ -30,12 +28,12 @@ type PTZValues struct {
 }
 
 var (
-	ComponentTracker = resource.NewModel("viam", "ptz-target-tracker", "component-tracker")
-	errUnimplemented = errors.New("unimplemented")
+	ModelComponentTracker = resource.NewModel("viam", "ptz-target-tracker", "component-tracker")
+	errUnimplemented      = errors.New("unimplemented")
 )
 
 func init() {
-	resource.RegisterService(genericservice.API, ComponentTracker,
+	resource.RegisterService(genericservice.API, ModelComponentTracker,
 		resource.Registration[resource.Resource, *Config]{
 			Constructor: newComponentTracker,
 		},
@@ -140,13 +138,11 @@ type componentTracker struct {
 	logger logging.Logger
 	cfg    *Config
 
-	cancelCtx  context.Context
-	cancelFunc func()
-
-	robotClient         robot.Robot
 	frameSystemService  framesystem.Service
 	targetComponentName string
 	onvifPTZClientName  string
+
+	onvifPTZClient generic.Resource
 
 	updateRateHz                     float64
 	panMinDeg                        float64
@@ -172,21 +168,7 @@ type componentTracker struct {
 
 // Close implements resource.Resource.
 func (s *componentTracker) Close(ctx context.Context) error {
-	s.logger.Debug("Closing component tracker")
-	// Stop tracking loop if running
-	s.workerMutex.Lock()
-	defer s.workerMutex.Unlock()
-	if s.workerRunning.Load() {
-		s.workerRunning.Store(false)
-		s.worker.Stop()
-	}
-	if s.robotClient != nil {
-		s.logger.Debug("Closing robot client connection")
-		if err := s.robotClient.Close(ctx); err != nil {
-			s.logger.Errorf("Error closing robot client: %v", err)
-			return err
-		}
-	}
+	s.worker.Stop()
 	return nil
 }
 
@@ -207,10 +189,18 @@ func (s *componentTracker) Reconfigure(ctx context.Context, deps resource.Depend
 		s.workerRunning.Store(false)
 		s.worker = utils.NewBackgroundStoppableWorkers()
 	}
+	// If ONVIF PTZ client name has changed, update the resource
+	if s.cfg.OnvifPTZClientName != conf.OnvifPTZClientName {
+		onvifPTZClientName := resource.NewName(generic.API, conf.OnvifPTZClientName)
+		onvifPTZClient, err := deps.GetResource(onvifPTZClientName)
+		if err != nil {
+			return fmt.Errorf("failed to get ONVIF PTZ client resource: %w", err)
+		}
+		s.onvifPTZClient = onvifPTZClient
+	}
 	// Update the config struct so TrackingMode and other fields are available
 	s.cfg = conf
 	s.targetComponentName = conf.TargetComponentName
-	s.onvifPTZClientName = conf.OnvifPTZClientName
 	s.updateRateHz = conf.UpdateRateHz
 	s.panMinDeg = conf.PanMinDeg
 	s.panMaxDeg = conf.PanMaxDeg
@@ -255,28 +245,24 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 	configJSON, _ := json.MarshalIndent(conf, "", "  ")
 	logger.Debugf("Creating Component with the following config:\n%s", configJSON)
 
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-	robotClient, err := vmodutils.ConnectToMachineFromEnv(ctx, logger)
+	onvifPTZClientName := resource.NewName(generic.API, conf.OnvifPTZClientName)
+	onvifPTZClient, err := deps.GetResource(onvifPTZClientName)
 	if err != nil {
-		cancelFunc()
-		return nil, fmt.Errorf("failed to connect to robot: %w", err)
+		return nil, fmt.Errorf("failed to get ONVIF PTZ client resource: %w", err)
 	}
 
 	frameSystemService, err := framesystem.FromDependencies(deps)
 	if err != nil {
-		cancelFunc()
 		return nil, fmt.Errorf("failed to get frame system service: %w", err)
 	}
 
 	_, err = frameSystemService.GetPose(ctx, conf.TargetComponentName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
-		cancelFunc()
 		return nil, fmt.Errorf("failed to get target pose: %w", err)
 	}
 
 	_, err = frameSystemService.GetPose(ctx, conf.PTZCameraName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
-		cancelFunc()
 		return nil, fmt.Errorf("failed to get PTZ camera pose: %w", err)
 	}
 
@@ -284,12 +270,9 @@ func NewComponentTracker(ctx context.Context, deps resource.Dependencies, name r
 		name:                name,
 		logger:              logger,
 		cfg:                 conf,
-		cancelCtx:           cancelCtx,
-		cancelFunc:          cancelFunc,
-		robotClient:         robotClient,
 		frameSystemService:  frameSystemService,
 		targetComponentName: conf.TargetComponentName,
-		onvifPTZClientName:  conf.OnvifPTZClientName,
+		onvifPTZClient:      onvifPTZClient,
 		updateRateHz:        conf.UpdateRateHz,
 		panMinDeg:           conf.PanMinDeg,
 		panMaxDeg:           conf.PanMaxDeg,
@@ -511,13 +494,7 @@ func (t *componentTracker) getPose(ctx context.Context, componentName string) (*
 }
 
 func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (PTZValues, error) {
-	onvifPTZClientName := resource.NewName(generic.API, t.onvifPTZClientName)
-	onvifPTZClient, err := t.robotClient.ResourceByName(onvifPTZClientName)
-	if err != nil {
-		t.logger.Errorf("Failed to get onvif PTZ client: %v", err)
-		return PTZValues{}, err
-	}
-	ptzStatusResponse, err := onvifPTZClient.DoCommand(ctx, map[string]interface{}{
+	ptzStatusResponse, err := t.onvifPTZClient.DoCommand(ctx, map[string]interface{}{
 		"command": "get-status",
 	})
 	if err != nil {
@@ -609,12 +586,6 @@ func (t *componentTracker) trackingLoop(ctx context.Context) {
 }
 
 func (t *componentTracker) sendAbsoluteMove(ctx context.Context, ptzValues PTZValues) error {
-	onvifPTZClientName := resource.NewName(generic.API, t.onvifPTZClientName)
-	onvifPTZClient, err := t.robotClient.ResourceByName(onvifPTZClientName)
-	if err != nil {
-		return fmt.Errorf("failed to get onvif PTZ client: %w", err)
-	}
-
 	panSpeed := 1
 	tiltSpeed := 1
 	zoomSpeed := 1
@@ -656,7 +627,7 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, ptzValues PTZVa
 		ptzValues.Pan, t.lastSentTZValues.Pan, panDeltaNormalized, panSpeed,
 		ptzValues.Tilt, t.lastSentTZValues.Tilt, tiltDeltaNormalized, tiltSpeed,
 		ptzValues.Zoom, panSpeed, tiltSpeed, zoomSpeed)
-	_, err = onvifPTZClient.DoCommand(ctx, map[string]interface{}{
+	_, err = t.onvifPTZClient.DoCommand(ctx, map[string]interface{}{
 		"command":       "absolute-move",
 		"pan_position":  ptzValues.Pan,
 		"tilt_position": ptzValues.Tilt,

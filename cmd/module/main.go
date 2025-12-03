@@ -12,7 +12,7 @@ import (
 func main() {
 	// ModularMain can take multiple APIModel arguments, if your module implements multiple models.
 	module.ModularMain(
-		resource.APIModel{API: generic.API, Model: models.ComponentTracker},
+		resource.APIModel{API: generic.API, Model: models.ModelComponentTracker},
 		resource.APIModel{API: camera.API, Model: models.ModelAimingCamera},
 	)
 }

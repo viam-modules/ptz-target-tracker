@@ -119,9 +119,19 @@ func (s *aimingCamera) Geometries(ctx context.Context, extra map[string]interfac
 
 func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
 	// Get images from underlying camera
-	img, meta, err := s.underlyingCam.Image(ctx, mimeType, extra)
+	filterSourceNames := []string{}
+	imgs, _, err := s.Images(ctx, filterSourceNames, extra)
+	if len(imgs) == 0 {
+		errorMsg := "No images returned from underlying camera"
+		return nil, camera.ImageMetadata{}, errors.New(errorMsg)
+	}
+	if len(imgs) > 1 {
+		s.logger.Warnf("Multiple images returned from underlying camera, only the first will be processed")
+	}
+
+	img, err := imgs[0].Bytes(ctx)
 	if err != nil {
-		errorMsg := "Error when requesting Image from underlying camera: " + err.Error()
+		errorMsg := "Error when getting bytes from named image: " + err.Error()
 		return nil, camera.ImageMetadata{}, errors.New(errorMsg)
 	}
 
@@ -149,7 +159,20 @@ func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[str
 		return nil, camera.ImageMetadata{}, errors.New(errorMsg)
 	}
 
-	return buf.Bytes(), meta, nil
+	outputMetadata := camera.ImageMetadata{
+		MimeType: mimeType,
+	}
+
+	return buf.Bytes(), outputMetadata, nil
+}
+
+func isImageMimeTypeSupported(mimeType string) bool {
+	switch mimeType {
+	case "image/png", "image/jpeg", "image/jpg", "":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *aimingCamera) Images(ctx context.Context, filterSourceNames []string, extra map[string]interface{}) ([]camera.NamedImage, resource.ResponseMetadata, error) {
@@ -163,6 +186,9 @@ func (s *aimingCamera) Images(ctx context.Context, filterSourceNames []string, e
 	// Create new named images with crosshair overlay
 	resultImgs := make([]camera.NamedImage, len(imgs))
 	for i, namedImg := range imgs {
+		if !isImageMimeTypeSupported(namedImg.MimeType()) {
+			continue
+		}
 		// Get the actual image
 		img, err := namedImg.Image(ctx)
 		if err != nil {
@@ -179,7 +205,9 @@ func (s *aimingCamera) Images(ctx context.Context, filterSourceNames []string, e
 			errorMsg := "Error when creating named image from image with crosshair: " + err.Error()
 			return nil, resource.ResponseMetadata{}, errors.New(errorMsg)
 		}
+		// Just return the first supported image with crosshair
 		resultImgs[i] = resultImg
+		break
 	}
 
 	return resultImgs, meta, nil
