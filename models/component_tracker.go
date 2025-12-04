@@ -473,7 +473,7 @@ func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (PTZVa
 		t.logger.Errorf("PTZ pan tilt y is not a float")
 		return PTZValues{}, fmt.Errorf("PTZ pan tilt y is not a float")
 	}
-	t.logger.Infof("PTZ status: zoom=%.1f, pan=%.1f, tilt=%.1f", zoomX, panTiltX, panTiltY)
+	t.logger.Debugf("PTZ status: zoom=%.1f, pan=%.1f, tilt=%.1f", zoomX, panTiltX, panTiltY)
 
 	return PTZValues{
 		Pan:  panTiltX,
