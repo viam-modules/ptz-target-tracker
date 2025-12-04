@@ -130,9 +130,11 @@ type Calibration struct {
 	IsCalibrated   bool      `json:"is_calibrated"`
 }
 
-const PAN_SPEED = 1.0
-const TILT_SPEED = 1.0
-const ZOOM_SPEED = 1.0
+const panSpeed = 1.0
+const tiltSpeed = 1.0
+const zoomSpeed = 1.0
+const minZoomValue = 0.0
+const maxZoomValue = 1.0
 
 type componentTracker struct {
 	resource.AlwaysRebuild
@@ -158,8 +160,6 @@ type componentTracker struct {
 	deadzone                         float64
 	minZoomDistance                  float64
 	maxZoomDistance                  float64
-	minZoomValue                     float64
-	maxZoomValue                     float64
 	absoluteCalibrationPanPlane      r3.Vector
 	absoluteCalibrationPan0Reference r3.Vector // Direction in panPlane that corresponds to pan=0
 	worker                           *utils.StoppableWorkers
@@ -523,17 +523,17 @@ func (t *componentTracker) sendAbsoluteMove(ctx context.Context, ptzValues PTZVa
 
 	// Comprehensive debug log with all information
 	t.logger.Debugf("Sending absolute move: target pan=%.3f (current=%.3f, delta=%.4f norm, speed=%.3f), target tilt=%.3f (current=%.3f, delta=%.4f norm, speed=%.3f), zoom=%.3f, speeds: pan=%.3f tilt=%.3f zoom=%.3f",
-		ptzValues.Pan, t.lastSentTZValues.Pan, panDeltaNormalized, PAN_SPEED,
-		ptzValues.Tilt, t.lastSentTZValues.Tilt, tiltDeltaNormalized, TILT_SPEED,
-		ptzValues.Zoom, PAN_SPEED, TILT_SPEED, ZOOM_SPEED)
+		ptzValues.Pan, t.lastSentTZValues.Pan, panDeltaNormalized, panSpeed,
+		ptzValues.Tilt, t.lastSentTZValues.Tilt, tiltDeltaNormalized, tiltSpeed,
+		ptzValues.Zoom, panSpeed, tiltSpeed, zoomSpeed)
 	_, err = t.onvifPTZClient.DoCommand(ctx, map[string]interface{}{
 		"command":       "absolute-move",
 		"pan_position":  ptzValues.Pan,
 		"tilt_position": ptzValues.Tilt,
 		"zoom_position": ptzValues.Zoom,
-		"pan_speed":     PAN_SPEED,
-		"tilt_speed":    TILT_SPEED,
-		"zoom_speed":    ZOOM_SPEED,
+		"pan_speed":     panSpeed,
+		"tilt_speed":    tiltSpeed,
+		"zoom_speed":    zoomSpeed,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to send absolute move: %w", err)
@@ -672,17 +672,17 @@ func (t *componentTracker) calculatePanTiltZoom(ctx context.Context, targetPos r
 }
 func (t *componentTracker) calculateZoom(pos r3.Vector, cameraPos r3.Vector) float64 {
 	distance := pos.Distance(cameraPos)
-	t.logger.Debugf("calculateZoom: calculating zoom for distance: %.2f mm, minZoomDistance: %.2f mm, maxZoomDistance: %.2f mm, minZoomValue: %.2f, maxZoomValue: %.2f\n", distance, t.minZoomDistance, t.maxZoomDistance, t.minZoomValue, t.maxZoomValue)
+	t.logger.Debugf("calculateZoom: calculating zoom for distance: %.2f mm, minZoomDistance: %.2f mm, maxZoomDistance: %.2f mm, minZoomValue: %.2f, maxZoomValue: %.2f\n", distance, t.minZoomDistance, t.maxZoomDistance, minZoomValue, maxZoomValue)
 
 	// Clamp distance to [minZoomDistance, maxZoomDistance]
 	// Closer = zoomed out (minZoomValue), farther = zoomed in (maxZoomValue)
 	if distance <= t.minZoomDistance {
-		t.logger.Debugf("calculateZoom: closest: zoomed out, zoom: %.2f", t.minZoomValue)
-		return t.minZoomValue // Closest: zoomed out
+		t.logger.Debugf("calculateZoom: closest: zoomed out, zoom: %.2f", minZoomValue)
+		return minZoomValue // Closest: zoomed out
 	}
 	if distance >= t.maxZoomDistance {
-		t.logger.Debugf("calculateZoom: farthest: zoomed in, zoom: %.2f", t.maxZoomValue)
-		return t.maxZoomValue // Farthest: zoomed in
+		t.logger.Debugf("calculateZoom: farthest: zoomed in, zoom: %.2f", maxZoomValue)
+		return maxZoomValue // Farthest: zoomed in
 	}
 
 	// Linear interpolation between minZoomDistance and maxZoomDistance
@@ -690,12 +690,12 @@ func (t *componentTracker) calculateZoom(pos r3.Vector, cameraPos r3.Vector) flo
 	// Zoom: minZoomValue at minZoomDistance (closest), maxZoomValue at maxZoomDistance (farthest)
 	if (t.maxZoomDistance - t.minZoomDistance) > 0 {
 		normalizedDistance := (distance - t.minZoomDistance) / (t.maxZoomDistance - t.minZoomDistance)
-		zoom := t.minZoomValue + (t.maxZoomValue-t.minZoomValue)*normalizedDistance
+		zoom := minZoomValue + (maxZoomValue-minZoomValue)*normalizedDistance
 		t.logger.Debugf("calculateZoom: zoom: %.2f normalizedDistance: %.2f, distance: %.2f mm", zoom, normalizedDistance, distance)
 		return zoom
 	} else {
-		t.logger.Debugf("calculateZoom: minZoomDistance == maxZoomDistance, zoom: %.2f", t.minZoomValue)
-		return t.minZoomValue
+		t.logger.Debugf("calculateZoom: minZoomDistance == maxZoomDistance, zoom: %.2f", minZoomValue)
+		return minZoomValue
 	}
 }
 
