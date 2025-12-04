@@ -6,10 +6,16 @@
   "description": "PTZ camera tracking service that automatically follows a target frame using ONVIF PTZ control",
   "models": [
     {
+      "api": "rdk:component:camera",
+      "model": "viam:ptz-target-tracker:aiming-camera",
+      "markdown_link": "README.md#model-viam:ptz-target-tracker:aiming-camera",
+      "short_description": "Camera component that provides aiming functionality for PTZ target tracking"
+    },
+    {
       "api": "rdk:service:generic",
-      "model": "viam:ptz-target-tracker:pose-tracker",
-      "short_description": "PTZ camera tracking service that automatically follows a target frame using ONVIF PTZ control",
-      "markdown_link": "README.md#model-viam:ptz-target-tracker:pose-tracker"
+      "model": "viam:ptz-target-tracker:component-tracker",
+      "markdown_link": "README.md#model-viam:ptz-target-tracker:component-tracker",
+      "short_description": "PTZ camera tracking service that automatically follows a target frame using ONVIF PTZ control"
     }
   ],
   "applications": null,
