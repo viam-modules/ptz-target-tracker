@@ -9,13 +9,13 @@
       "api": "rdk:service:generic",
       "model": "viam:ptz-target-tracker:component-tracker",
       "short_description": "PTZ camera tracking service that automatically follows a target frame using ONVIF PTZ control with polynomial-fit calibration",
-      "markdown_link": "README.md"
+      "markdown_link": "README.md#model-viamptz-target-trackercomponent-tracker"
     },
     {
       "api": "rdk:component:camera",
       "model": "viam:ptz-target-tracker:aiming-camera",
       "short_description": "Camera wrapper that overlays a crosshair on the video feed",
-      "markdown_link": "README.md"
+      "markdown_link": "README.md#model-viamptz-target-trackeraiming-camera"
     }
   ],
   "applications": null,

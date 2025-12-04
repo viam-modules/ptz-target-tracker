@@ -1,6 +1,6 @@
 # Module ptz-target-tracker 
 
-Provide a description of the purpose of the module and any relevant information.
+This module allows users to setup a system to track a component in the Viam FrameSystem by using a PTZ camera
 
 ## Model viam:ptz-target-tracker:component-tracker
 
@@ -137,5 +137,29 @@ Computes the polynomial calibration function based on the samples currently stor
 ```json
 {
   "command": "compute-polynomial"
+}
+```
+
+## Model viam:ptz-target-tracker:aiming-camera
+Component that allows an user to create a camera that allows in aiming the ptz camera to the target being tracked for the purpose of getting calibration samples
+
+### Configuration
+```json
+{
+  "camera_name": <string>
+}
+```
+
+#### Attributes
+The following attributes are available for this model:
+
+| Name          | Type   | Inclusion | Description                |
+|---------------|--------|-----------|----------------------------|
+| `camera_name` | string  | Required  | Name of the underlying camera from where images will be obtained, this component will simply overlay a red crosshair in the middle of the frame |
+
+#### Example Configuration
+```json
+{
+  "camera_name": "ptz-camera-1"
 }
 ```
