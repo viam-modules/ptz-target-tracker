@@ -9,8 +9,8 @@ ifeq ($(VIAM_TARGET_OS), windows)
 	MODULE_BINARY = bin/ptz-target-tracker.exe
 endif
 
-$(MODULE_BINARY): Makefile go.mod *.go cmd/module/*.go 
-	GOOS=$(VIAM_BUILD_OS) GOARCH=$(VIAM_BUILD_ARCH) $(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) -o $(MODULE_BINARY) cmd/module/main.go
+$(MODULE_BINARY): Makefile go.mod models/*.go cmd/module/*.go
+	GOOS=$(VIAM_BUILD_OS) GOARCH=$(VIAM_BUILD_ARCH) $(GO_BUILD_ENV) go build $(GO_BUILD_FLAGS) -o $(MODULE_BINARY) ./cmd/module
 
 lint:
 	gofmt -s -w .
