@@ -373,10 +373,8 @@ func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interfa
 		return map[string]interface{}{"status": "removed", "index": len(t.samples)}, nil
 
 	case "clear-calibration":
-		t.calibration.IsCalibrated = false
+		t.calibration = Calibration{}
 		t.samples = []TrackingSample{}
-		t.calibration.PanPolyCoeffs = []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-		t.calibration.TiltPolyCoeffs = []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 		return map[string]interface{}{"status": "cleared"}, nil
 
 	case "compute-polynomial":
@@ -411,7 +409,7 @@ func (t *componentTracker) getPose(ctx context.Context, componentName string) (*
 	pose, err := t.frameSystemService.GetPose(ctx, componentName, "", []*referenceframe.LinkInFrame{}, map[string]interface{}{})
 	if err != nil {
 		t.logger.Errorf("Failed to get pose for component %s: %v", componentName, err)
-		return nil, err
+		return nil, fmt.Errorf("Failed to get pose for component %s: %v", componentName, err)
 	}
 	return pose, nil
 }
@@ -427,7 +425,7 @@ func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (PTZVa
 	moveStatus, ok := ptzStatusResponse["move_status"].(map[string]interface{})
 	if !ok {
 		t.logger.Errorf("PTZ move status is not a map")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ move status is not a map")
 	}
 	movePanTilt, ok := moveStatus["pan_tilt"].(string)
 	if !ok {
@@ -448,32 +446,32 @@ func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (PTZVa
 	position, ok := ptzStatusResponse["position"].(map[string]interface{})
 	if !ok {
 		t.logger.Errorf("PTZ status is not a map")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ status is not a map")
 	}
 	zoom, ok := position["zoom"].(map[string]interface{})
 	if !ok {
 		t.logger.Errorf("PTZ zoom is not a map")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ zoom is not a map")
 	}
 	zoomX, ok := zoom["x"].(float64)
 	if !ok {
 		t.logger.Errorf("PTZ zoom x is not a float")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ zoom x is not a float")
 	}
 	panTilt, ok := position["pan_tilt"].(map[string]interface{})
 	if !ok {
 		t.logger.Errorf("PTZ pan tilt is not a map")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ pan tilt is not a map")
 	}
 	panTiltX, ok := panTilt["x"].(float64)
 	if !ok {
 		t.logger.Errorf("PTZ pan tilt x is not a float")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ pan tilt x is not a float")
 	}
 	panTiltY, ok := panTilt["y"].(float64)
 	if !ok {
 		t.logger.Errorf("PTZ pan tilt y is not a float")
-		return PTZValues{}, err
+		return PTZValues{}, fmt.Errorf("PTZ pan tilt y is not a float")
 	}
 	t.logger.Infof("PTZ status: zoom=%.1f, pan=%.1f, tilt=%.1f", zoomX, panTiltX, panTiltY)
 
@@ -646,11 +644,11 @@ func (t *componentTracker) calculatePanTiltPolynomial(pos r3.Vector) (pan, tilt 
 	pan, tilt = 0, 0
 	if len(t.calibration.PanPolyCoeffs) != len(t.calibration.TiltPolyCoeffs) {
 		t.logger.Errorf("Calibration polynomial coefficient length mismatch: pan=%d, tilt=%d", len(t.calibration.PanPolyCoeffs), len(t.calibration.TiltPolyCoeffs))
-		return 0, 0, fmt.Errorf("calibration polynomial coefficient length mismatch")
+		return 0, 0, fmt.Errorf("Calibration polynomial coefficient length mismatch: pan=%d, tilt=%d", len(t.calibration.PanPolyCoeffs), len(t.calibration.TiltPolyCoeffs))
 	}
 	if len(features) != len(t.calibration.PanPolyCoeffs) {
 		t.logger.Errorf("Feature length mismatch: features=%d, pan_coeffs=%d", len(features), len(t.calibration.PanPolyCoeffs))
-		return 0, 0, fmt.Errorf("feature length mismatch")
+		return 0, 0, fmt.Errorf("Feature length mismatch: features=%d, pan_coeffs=%d", len(features), len(t.calibration.PanPolyCoeffs))
 	}
 	for i := range features {
 		pan += t.calibration.PanPolyCoeffs[i] * features[i]
