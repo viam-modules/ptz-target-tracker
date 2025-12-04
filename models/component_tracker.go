@@ -241,7 +241,7 @@ func (s *componentTracker) Name() resource.Name {
 func (t *componentTracker) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
 	t.logger.Debugf("DoCommand: %+v", cmd)
 	if t.cfg.EnableOnStart {
-		return nil, errors.New("cannot execute commands while component is running")
+		return nil, errors.New("cannot execute commands if enable_on_start is set to true")
 	}
 	switch cmd["command"] {
 	case "get-calibration-samples":
