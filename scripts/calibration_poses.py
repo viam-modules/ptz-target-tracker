@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import shutil
+import trimesh
+import numpy as np
 
 
 def main():
@@ -57,7 +59,12 @@ def main():
         "-m", "--mesh",
         type=str,
         default="mesh.ply",
-        help="Path to mesh file"
+        help="Path to mesh file (not required if --dry-run is used)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        type=str,
+        help="Dry run mode: provide bounding box as 'x_min,y_min,z_min,x_max,y_max,z_max' in mm to generate a simple box mesh for testing"
     )
     parser.add_argument(
         "-o", "--output",
@@ -137,6 +144,56 @@ def main():
     
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 Output directory: {output_dir.absolute()}\n")
+    
+    # Handle dry run mode - generate mesh from bounding box
+    if args.dry_run:
+        try:
+            bbox_values = [float(x) for x in args.dry_run.split(',')]
+            if len(bbox_values) != 6:
+                raise ValueError("Expected 6 values")
+            x_min, y_min, z_min, x_max, y_max, z_max = bbox_values
+            
+            # Create box mesh from bounding box
+            center = np.array([
+                (x_min + x_max) / 2,
+                (y_min + y_max) / 2,
+                (z_min + z_max) / 2
+            ])
+            extents = np.array([
+                x_max - x_min,
+                y_max - y_min,
+                z_max - z_min
+            ])
+            
+            # Create box mesh (trimesh uses meters, convert from mm)
+            box_mesh = trimesh.creation.box(extents / 1000.0)
+            box_mesh.apply_translation(center / 1000.0)
+            
+            # Save to output directory
+            mesh_path = output_dir / "dry_run_mesh.ply"
+            box_mesh.export(str(mesh_path))
+            
+            # Update args.mesh to use the generated mesh
+            args.mesh = str(mesh_path)
+            
+            print(f"🧪 DRY RUN MODE")
+            print(f"   Generated mesh from bounding box:")
+            print(f"   X: [{x_min}, {x_max}] mm")
+            print(f"   Y: [{y_min}, {y_max}] mm")
+            print(f"   Z: [{z_min}, {z_max}] mm")
+            print(f"   Saved to: {mesh_path}\n")
+            
+        except ValueError as e:
+            print(f"❌ Error: Invalid --dry-run format. Expected 'x_min,y_min,z_min,x_max,y_max,z_max' in mm")
+            print(f"   Example: --dry-run '-2000,500,-600,2000,2200,-300'")
+            sys.exit(1)
+    else:
+        # Use provided mesh file
+        mesh_path = Path(args.mesh)
+        if not mesh_path.exists():
+            print(f"❌ Error: Mesh file not found: {mesh_path}")
+            print(f"   Tip: Use --dry-run 'x_min,y_min,z_min,x_max,y_max,z_max' for testing without a mesh file")
+            sys.exit(1)
     
     # Get the script directory
     script_dir = Path(__file__).parent
@@ -250,9 +307,9 @@ def main():
             else:
                 print(f"⚠️  Could not find {visualization_html_path}", file=sys.stderr)
     
-    # Copy mesh file to output directory for reference
+    # Copy mesh file to output directory for reference (unless dry-run, where it's already there)
     mesh_path = Path(args.mesh)
-    if mesh_path.exists():
+    if mesh_path.exists() and not args.dry_run:
         shutil.copy(mesh_path, output_dir / mesh_path.name)
     
     print("\n" + "=" * 60)

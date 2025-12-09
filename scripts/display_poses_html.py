@@ -446,6 +446,8 @@ def main():
         let originSphere = null;
         let reachSphere = null;
         let meshIndex = 0;  // Track which mesh we're processing
+        let highlightedObject = null;
+        let originalMaterial = null;
         
         function init() {{
             console.log('Initializing scene...');
@@ -588,6 +590,10 @@ def main():
                                 depthWrite: false
                             }});
                             child.userData.isObstacleFill = true;
+                            child.userData.obstacleIndex = obstacleIndex;
+                            if (obstacleIndex < obstaclesData.length) {{
+                                child.userData.obstacleData = obstaclesData[obstacleIndex];
+                            }}
                             obstacleBoxes.push(child);  // Add the fill mesh to the obstacles array too
                             console.log('Added OBSTACLE box wireframe and fill');
                         }} else if (meshType === 'mesh') {{
@@ -630,7 +636,15 @@ def main():
             }});
             
             window.addEventListener('resize', onWindowResize, false);
-            window.addEventListener('mousemove', onMouseMove, false);
+            window.addEventListener('click', onClick, false);
+            
+            // Close tooltip on ESC key
+            window.addEventListener('keydown', function(e) {{
+                if (e.key === 'Escape') {{
+                    clearHighlight();
+                    tooltip.style.display = 'none';
+                }}
+            }});
             
             // Setup visibility toggle controls
             setupVisibilityControls();
@@ -698,7 +712,48 @@ def main():
             document.getElementById('filter-untested').addEventListener('change', updatePoseVisibility);
         }}
         
-        function onMouseMove(event) {{
+        function clearHighlight() {{
+            if (highlightedObject && originalMaterial) {{
+                highlightedObject.material = originalMaterial;
+                highlightedObject = null;
+                originalMaterial = null;
+            }}
+        }}
+        
+        function highlightObject(obj) {{
+            clearHighlight();
+            highlightedObject = obj;
+            originalMaterial = obj.material.clone();
+            
+            // Create highlighted material
+            const highlightMaterial = obj.material.clone();
+            
+            if (obj.userData.isPose || obj.userData.isOrigin) {{
+                // Make poses brighter and add emissive
+                highlightMaterial.emissive = new THREE.Color(0xFFFF00);
+                highlightMaterial.emissiveIntensity = 2.0;
+            }} else if (obj.userData.isEndEffector) {{
+                highlightMaterial.color = new THREE.Color(0xFFFF00);
+                highlightMaterial.emissive = new THREE.Color(0xFFAA00);
+                highlightMaterial.emissiveIntensity = 0.8;
+                highlightMaterial.opacity = 0.9;
+            }} else if (obj.userData.isMesh) {{
+                highlightMaterial.color = new THREE.Color(0x00FFFF);
+                highlightMaterial.emissive = new THREE.Color(0x00AAFF);
+                highlightMaterial.emissiveIntensity = 0.7;
+            }} else {{
+                // Generic highlight - brighten the material
+                const currentColor = new THREE.Color(highlightMaterial.color);
+                currentColor.multiplyScalar(1.5);
+                highlightMaterial.color = currentColor;
+                highlightMaterial.emissive = currentColor;
+                highlightMaterial.emissiveIntensity = 0.5;
+            }}
+            
+            obj.material = highlightMaterial;
+        }}
+        
+        function onClick(event) {{
             if (!scene || !camera || !raycaster) return;
             
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
@@ -709,39 +764,48 @@ def main():
             
             let foundObject = false;
             if (intersects.length > 0) {{
-                console.log('Intersected', intersects.length, 'objects');
                 for (let i = 0; i < intersects.length; i++) {{
                     const obj = intersects[i].object;
-                    console.log('Checking object:', obj.userData);
+                    
+                    // Skip invisible objects
+                    if (!obj.visible) continue;
                     
                     // Check for pose spheres
                     if (obj.userData.isPose || obj.userData.isOrigin) {{
-                        // Get sphere center from bounding box (more reliable)
+                        highlightObject(obj);
+                        
                         const box = new THREE.Box3().setFromObject(obj);
                         const sphereCenter = box.getCenter(new THREE.Vector3());
                         
-                        const label = obj.userData.isOrigin ? 'Origin' : 'Pose Position';
+                        const label = obj.userData.isOrigin ? 'Arm Base (Origin)' : 'Calibration Pose';
+                        const icon = obj.userData.isOrigin ? '&#127919;' : '&#128205;';  // 🎯 and 📍
                         
-                        // Calculate distance from origin
                         const distanceFromOrigin = Math.sqrt(
                             sphereCenter.x * sphereCenter.x +
                             sphereCenter.y * sphereCenter.y +
                             sphereCenter.z * sphereCenter.z
                         );
                         
-                        console.log('Found sphere:', label, 'at', sphereCenter);
-                        
                         tooltip.style.display = 'block';
                         tooltip.style.left = event.clientX + 15 + 'px';
                         tooltip.style.top = event.clientY + 15 + 'px';
                         
-                        let tooltipContent = `<strong>${{label}}:</strong><br>
-                            X: ${{sphereCenter.x.toFixed(2)}} mm<br>
-                            Y: ${{sphereCenter.y.toFixed(2)}} mm<br>
-                            Z: ${{sphereCenter.z.toFixed(2)}} mm`;
+                        let tooltipContent = `<strong>${{icon}} ${{label}}</strong><br>
+                            <strong>Position:</strong><br>
+                            &nbsp;&nbsp;X: ${{sphereCenter.x.toFixed(1)}} mm<br>
+                            &nbsp;&nbsp;Y: ${{sphereCenter.y.toFixed(1)}} mm<br>
+                            &nbsp;&nbsp;Z: ${{sphereCenter.z.toFixed(1)}} mm`;
                         
                         if (obj.userData.isPose) {{
-                            tooltipContent += `<br><strong>Distance from origin:</strong> ${{distanceFromOrigin.toFixed(2)}} mm`;
+                            tooltipContent += `<br><strong>Distance:</strong> ${{distanceFromOrigin.toFixed(1)}} mm`;
+                            
+                            if (obj.userData.visited) {{
+                                tooltipContent += `<br><strong>Status:</strong> &#9989; Visited`;  // ✅
+                            }} else if (obj.userData.failed) {{
+                                tooltipContent += `<br><strong>Status:</strong> &#10060; Failed`;  // ❌
+                            }} else {{
+                                tooltipContent += `<br><strong>Status:</strong> &#9898; Not tested`;  // ⚪
+                            }}
                         }}
                         
                         tooltip.innerHTML = tooltipContent;
@@ -749,8 +813,56 @@ def main():
                         break;
                     }}
                     
+                    // Check for end effectors
+                    if (obj.userData.isEndEffector) {{
+                        highlightObject(obj);
+                        
+                        const box = new THREE.Box3().setFromObject(obj);
+                        const center = box.getCenter(new THREE.Vector3());
+                        const size = new THREE.Vector3();
+                        box.getSize(size);
+                        
+                        tooltip.style.display = 'block';
+                        tooltip.style.left = event.clientX + 15 + 'px';
+                        tooltip.style.top = event.clientY + 15 + 'px';
+                        
+                        tooltip.innerHTML = `<strong>&#128295; End Effector</strong><br>
+                            <strong>Center:</strong><br>
+                            &nbsp;&nbsp;X: ${{center.x.toFixed(1)}} mm<br>
+                            &nbsp;&nbsp;Y: ${{center.y.toFixed(1)}} mm<br>
+                            &nbsp;&nbsp;Z: ${{center.z.toFixed(1)}} mm<br>
+                            <strong>Size:</strong> ${{size.x.toFixed(0)}} &times; ${{size.y.toFixed(0)}} &times; ${{size.z.toFixed(0)}} mm`;
+                        
+                        foundObject = true;
+                        break;
+                    }}
+                    
+                    // Check for reach sphere
+                    if (obj === reachSphere) {{
+                        // Don't highlight reach sphere as it's translucent
+                        
+                        const box = new THREE.Box3().setFromObject(obj);
+                        const radius = box.max.x - box.min.x;  // Diameter / 2
+                        
+                        tooltip.style.display = 'block';
+                        tooltip.style.left = event.clientX + 15 + 'px';
+                        tooltip.style.top = event.clientY + 15 + 'px';
+                        
+                        tooltip.innerHTML = `<strong>&#128309; Arm Reach Sphere</strong><br>
+                            <strong>Radius:</strong> ${{(radius / 2).toFixed(0)}} mm<br>
+                            <strong>Center:</strong> Origin (0, 0, 0)`;
+                        
+                        foundObject = true;
+                        break;
+                    }}
+                    
                     // Check for obstacle boxes
-                    if (obj.userData.isObstacle && obj.userData.obstacleData) {{
+                    if ((obj.userData.isObstacle || obj.userData.isObstacleFill) && obj.userData.obstacleData) {{
+                        // Highlight only the fill, not wireframe
+                        if (obj.userData.isObstacleFill) {{
+                            highlightObject(obj);
+                        }}
+                        
                         const obstacleData = obj.userData.obstacleData;
                         const label = obstacleData.label || 'Obstacle';
                         const geom = obstacleData.geometry;
@@ -760,9 +872,37 @@ def main():
                         tooltip.style.left = event.clientX + 15 + 'px';
                         tooltip.style.top = event.clientY + 15 + 'px';
                         
-                        tooltip.innerHTML = `<strong>${{label}}:</strong><br>
-                            Center: (${{trans.x.toFixed(1)}}, ${{trans.y.toFixed(1)}}, ${{trans.z.toFixed(1)}}) mm<br>
-                            Size: ${{geom.x.toFixed(1)}} x ${{geom.y.toFixed(1)}} x ${{geom.z.toFixed(1)}} mm`;
+                        tooltip.innerHTML = `<strong>&#128679; ${{label}}</strong><br>
+                            <strong>Center:</strong><br>
+                            &nbsp;&nbsp;X: ${{trans.x.toFixed(1)}} mm<br>
+                            &nbsp;&nbsp;Y: ${{trans.y.toFixed(1)}} mm<br>
+                            &nbsp;&nbsp;Z: ${{trans.z.toFixed(1)}} mm<br>
+                            <strong>Dimensions:</strong> ${{geom.x.toFixed(0)}} &times; ${{geom.y.toFixed(0)}} &times; ${{geom.z.toFixed(0)}} mm`;
+                        
+                        foundObject = true;
+                        break;
+                    }}
+                    
+                    // Check for main mesh
+                    if (obj.userData.isMesh) {{
+                        highlightObject(obj);
+                        
+                        const box = new THREE.Box3().setFromObject(obj);
+                        const min = box.min;
+                        const max = box.max;
+                        const size = new THREE.Vector3();
+                        box.getSize(size);
+                        
+                        tooltip.style.display = 'block';
+                        tooltip.style.left = event.clientX + 15 + 'px';
+                        tooltip.style.top = event.clientY + 15 + 'px';
+                        
+                        tooltip.innerHTML = `<strong>&#127959; Environment Mesh</strong><br>
+                            <strong>Bounds:</strong><br>
+                            &nbsp;&nbsp;X: [${{min.x.toFixed(0)}}, ${{max.x.toFixed(0)}}] mm<br>
+                            &nbsp;&nbsp;Y: [${{min.y.toFixed(0)}}, ${{max.y.toFixed(0)}}] mm<br>
+                            &nbsp;&nbsp;Z: [${{min.z.toFixed(0)}}, ${{max.z.toFixed(0)}}] mm<br>
+                            <strong>Size:</strong> ${{size.x.toFixed(0)}} &times; ${{size.y.toFixed(0)}} &times; ${{size.z.toFixed(0)}} mm`;
                         
                         foundObject = true;
                         break;
@@ -771,6 +911,7 @@ def main():
             }}
             
             if (!foundObject) {{
+                clearHighlight();
                 tooltip.style.display = 'none';
             }}
         }}
