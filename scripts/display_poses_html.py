@@ -319,6 +319,43 @@ def main():
             display: none;
             z-index: 1000;
         }}
+        #legend {{
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }}
+        #legend h3 {{
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 5px;
+        }}
+        #legend .axis-item {{
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+        }}
+        #legend .axis-color {{
+            width: 30px;
+            height: 3px;
+            margin-right: 10px;
+            border-radius: 2px;
+        }}
+        #legend .x-axis {{
+            background: #ff0000;
+        }}
+        #legend .y-axis {{
+            background: #00ff00;
+        }}
+        #legend .z-axis {{
+            background: #0000ff;
+        }}
     </style>
 </head>
 <body>
@@ -367,6 +404,21 @@ def main():
             <input type="checkbox" id="filter-untested" checked>
             Untested (Red)
         </label>
+    </div>
+    <div id="legend">
+        <h3>Axes</h3>
+        <div class="axis-item">
+            <div class="axis-color x-axis"></div>
+            <span>X Axis (Red)</span>
+        </div>
+        <div class="axis-item">
+            <div class="axis-color y-axis"></div>
+            <span>Y Axis (Green)</span>
+        </div>
+        <div class="axis-item">
+            <div class="axis-color z-axis"></div>
+            <span>Z Axis (Blue)</span>
+        </div>
     </div>
     <div id="tooltip"></div>
     <script type="importmap">
@@ -417,6 +469,10 @@ def main():
             
             const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
             scene.add(ambientLight);
+            
+            // Add axes helper (XYZ reference frame)
+            const axesHelper = new THREE.AxesHelper(500);  // 500mm axes length
+            scene.add(axesHelper);
             
             const light1 = new THREE.DirectionalLight(0xffffff, 0.8);
             light1.position.set(1000, 1000, 1000);

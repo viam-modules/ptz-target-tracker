@@ -174,7 +174,7 @@ Examples:
         '-n', '--num-poses',
         type=int,
         default=24,
-        help='Number of poses to generate (12-24). Min 12: lower layer only. Max 24: full coverage (default: 24)'
+        help='Number of poses to generate (9-17). Min 9: lower layer only. Max 17: lower + high layer + 4 fully extended (default: 24)'
     )
     
     parser.add_argument(
@@ -257,12 +257,12 @@ Examples:
     
     # Validate parameters
     num_poses_requested = args.num_poses
-    if num_poses_requested < 12:
-        print(f"Warning: Minimum is 12 poses. Setting to 12.")
-        num_poses_requested = 12
-    elif num_poses_requested > 24:
-        print(f"Warning: Maximum is 24 poses. Setting to 24.")
-        num_poses_requested = 24
+    if num_poses_requested < 9:
+        print(f"Warning: Minimum is 9 poses. Setting to 9.")
+        num_poses_requested = 9
+    elif num_poses_requested > 17:
+        print(f"Warning: Maximum is 17 poses. Setting to 17.")
+        num_poses_requested = 17
     
     MAX_REACH = args.reach
     if MAX_REACH <= 0:
@@ -317,10 +317,11 @@ Examples:
     print(f"  Max: [{max_mm[0]:.1f}, {max_mm[1]:.1f}, {max_mm[2]:.1f}]")
     
     # Generate poses ABOVE the mesh with better spatial coverage
-    # Two layers: ee_clearance above mesh top, and 600mm above mesh top
+    # Three layers: ee_clearance above mesh top, 600mm, and 1000mm above mesh top
     z_layers = [
         max_mm[2] + args.ee_clearance,       # Lower layer: ee_clearance above mesh top (most important)
-        max_mm[2] + 600                      # Upper layer: 600mm above mesh top
+        max_mm[2] + 600,                     # Middle layer: 600mm above mesh top
+        max_mm[2] + 1000                     # High layer: 1000mm above mesh top (maximum reach)
     ]
     
     print(f"\nGenerating poses ABOVE the mesh:")
@@ -330,45 +331,46 @@ Examples:
     print(f"  Mesh top is at {max_mm[2]:.1f} mm")
     
     # Determine grid size based on requested number of poses
-    # Lower layer always gets 12 poses (3x4 grid)
-    # If total > 12, add poses to upper layer
-    nx_lower, ny_lower = 3, 4  # 12 poses on lower (most important) layer
+    # Lower layer always gets 9 poses (3x3 grid)
+    # High layer gets remaining poses (3x1 grid + optional extra far pose)
+    nx_lower, ny_lower = 3, 3  # 9 poses on lower (most important) layer
     num_lower = nx_lower * ny_lower
-    num_upper = num_poses_requested - num_lower
+    
+    remaining = num_poses_requested - num_lower
+    if remaining > 0:
+        num_high = min(remaining, 3)  # Standard 3x1 grid
+        nx_high, ny_high = 3, 1
+        num_high_extra = remaining - 3 if remaining > 3 else 0  # Extra far pose
+    else:
+        num_high = 0
+        nx_high, ny_high = 0, 0
+        num_high_extra = 0
+    
+    # No middle layer
+    num_middle = 0
+    nx_middle, ny_middle = 0, 0
     
     print(f"\nPose distribution:")
     print(f"  Lower layer (most important): {num_lower} poses ({nx_lower}x{ny_lower} grid)")
-    if num_upper > 0:
-        # Calculate grid for upper layer to match requested count
-        # Try to keep aspect ratio similar to lower layer
-        if num_upper >= 12:
-            nx_upper, ny_upper = 3, 4  # Full grid on upper layer
-        else:
-            # Distribute remaining poses as evenly as possible
-            # Use simple factorization to get closest to square/rectangular grid
-            best_nx, best_ny = 1, num_upper
-            for nx in range(1, num_upper + 1):
-                if num_upper % nx == 0:
-                    ny = num_upper // nx
-                    if abs(nx - ny) < abs(best_nx - best_ny):
-                        best_nx, best_ny = nx, ny
-            nx_upper, ny_upper = best_nx, best_ny
-        print(f"  Upper layer: {num_upper} poses ({nx_upper}x{ny_upper} grid)")
+    print(f"  Middle layer: 0 poses")
+    if num_high > 0:
+        print(f"  High layer (max reach): {num_high} poses ({nx_high}x{ny_high} grid)")
     else:
-        nx_upper, ny_upper = 0, 0
-        print(f"  Upper layer: 0 poses (only lower layer)")
+        print(f"  High layer: 0 poses")
     
     poses = []
     
     # Calculate reasonable generation area based on reach and Z heights
     # The maximum XY distance we can have at each Z layer while staying within reach
     max_xy_radius_lower = np.sqrt(MAX_REACH**2 - (z_layers[0] - arm_base[2])**2) if MAX_REACH**2 > (z_layers[0] - arm_base[2])**2 else 0
-    max_xy_radius_upper = np.sqrt(MAX_REACH**2 - (z_layers[1] - arm_base[2])**2) if MAX_REACH**2 > (z_layers[1] - arm_base[2])**2 else 0
+    max_xy_radius_middle = np.sqrt(MAX_REACH**2 - (z_layers[1] - arm_base[2])**2) if MAX_REACH**2 > (z_layers[1] - arm_base[2])**2 else 0
+    max_xy_radius_high = np.sqrt(MAX_REACH**2 - (z_layers[2] - arm_base[2])**2) if MAX_REACH**2 > (z_layers[2] - arm_base[2])**2 else 0
     
     # Use 80% of max radius to ensure poses are comfortably within reach
     safe_margin = 0.8
     generation_radius_lower = max_xy_radius_lower * safe_margin
-    generation_radius_upper = max_xy_radius_upper * safe_margin
+    generation_radius_middle = max_xy_radius_middle * safe_margin
+    generation_radius_high = max_xy_radius_high * safe_margin
     
     # Also constrain by mesh bounds
     x_min_gen = max(min_mm[0], arm_base[0] - generation_radius_lower)
@@ -378,7 +380,8 @@ Examples:
     
     print(f"\nGeneration area (constrained by reach and mesh):")
     print(f"  Max XY radius at lower layer: {max_xy_radius_lower:.1f} mm (using {safe_margin*100:.0f}% = {generation_radius_lower:.1f} mm)")
-    print(f"  Max XY radius at upper layer: {max_xy_radius_upper:.1f} mm (using {safe_margin*100:.0f}% = {generation_radius_upper:.1f} mm)")
+    print(f"  Max XY radius at middle layer: {max_xy_radius_middle:.1f} mm (using {safe_margin*100:.0f}% = {generation_radius_middle:.1f} mm)")
+    print(f"  Max XY radius at high layer: {max_xy_radius_high:.1f} mm (using {safe_margin*100:.0f}% = {generation_radius_high:.1f} mm)")
     print(f"  X: [{x_min_gen:.1f}, {x_max_gen:.1f}] mm")
     print(f"  Y: [{y_min_gen:.1f}, {y_max_gen:.1f}] mm")
     
@@ -478,14 +481,14 @@ Examples:
             else:
                 print(f"  ✓ Pose {pose_count}: [{x:.1f}, {y:.1f}, {z:.1f}] mm ({height_above:.0f}mm above mesh, distance: {distance:.1f} mm)")
     
-    # Generate upper layer (if requested)
-    if num_upper > 0:
-        x_positions_upper = np.linspace(x_min_gen + x_margin, x_max_gen - x_margin, nx_upper)
-        y_positions_upper = np.linspace(y_min_gen + y_margin, y_max_gen - y_margin, ny_upper)
+    # Generate middle layer (if requested)
+    if num_middle > 0:
+        x_positions_middle = np.linspace(x_min_gen + x_margin, x_max_gen - x_margin, nx_middle)
+        y_positions_middle = np.linspace(y_min_gen + y_margin, y_max_gen - y_margin, ny_middle)
         
-        print(f"\nGenerating upper layer poses:")
-        for y in y_positions_upper:
-            for x in x_positions_upper:
+        print(f"\nGenerating middle layer poses:")
+        for y in y_positions_middle:
+            for x in x_positions_middle:
                 z = z_layers[1]
                 # Calculate distance from arm base
                 pose_pos = np.array([x, y, z])
@@ -541,8 +544,191 @@ Examples:
                 poses.append(pose_data)
                 pose_count += 1
                 
-                print(f"  ✓ Pose {pose_count}: [{x:.1f}, {y:.1f}, {z:.1f}] mm (above mesh by {z - max_mm[2]:.1f} mm, distance: {distance:.1f} mm)")
+                height_above = z - max_mm[2]
+                print(f"  ✓ Pose {pose_count}: [{x:.1f}, {y:.1f}, {z:.1f}] mm ({height_above:.0f}mm above mesh, distance: {distance:.1f} mm)")
+    
+    # Generate high layer (if requested)
+    if num_high > 0:
+        # Use reduced range for high layer to stay within reach
+        # Calculate tighter bounds based on max_xy_radius_high
+        x_high_limit = min(max_xy_radius_high, x_max_gen - x_margin)
+        y_high_limit = min(max_xy_radius_high * 0.7, y_max_gen - y_margin)  # More conservative on Y due to offset
+        x_positions_high = np.linspace(-x_high_limit, x_high_limit, nx_high)
+        y_positions_high = np.linspace(y_min_gen + y_margin, y_high_limit, ny_high)
+        
+        print(f"\nGenerating high layer poses:")
+        for y in y_positions_high:
+            for x in x_positions_high:
+                z = z_layers[2]
+                # Calculate distance from arm base
+                pose_pos = np.array([x, y, z])
+                distance = np.linalg.norm(pose_pos - arm_base)
+                
+                # Skip poses that are beyond the arm's reach
+                if distance > MAX_REACH:
+                    rejected_count += 1
+                    print(f"  ✗ Skipped (reach): [{x:.1f}, {y:.1f}, {z:.1f}] mm - Distance {distance:.1f} mm > {MAX_REACH} mm")
+                    continue
+                
+                # Check collision with obstacles
+                collides, obstacle_label = check_collision_with_obstacles(
+                    pose_pos, args.ee_z, args.ee_x, args.ee_y, args.ee_clearance, obstacles
+                )
+                if collides:
+                    rejected_by_obstacle += 1
+                    print(f"  ✗ Skipped (obstacle): [{x:.1f}, {y:.1f}, {z:.1f}] mm - Collision with {obstacle_label}")
+                    continue
+                
+                # Default orientation: pointing down (-Z direction)
+                o_x = 0.0
+                o_y = 0.0
+                o_z = -1.0
+                theta = 90.0
+                
+                pose_data = {
+                    "data": {
+                        "pose": {
+                            "x": float(x),
+                            "y": float(y),
+                            "z": float(z),
+                            "o_x": o_x,
+                            "o_y": o_y,
+                            "o_z": o_z,
+                            "theta": theta
+                        }
+                    },
+                    "tags": None,
+                    "additional_parameters": {},
+                    "method_name": "EndPosition",
+                    "organization_id": "generated",
+                    "time_requested": datetime.now(timezone.utc).isoformat(),
+                    "time_received": datetime.now(timezone.utc).isoformat(),
+                    "location_id": "generated",
+                    "robot_id": "generated",
+                    "part_id": "generated",
+                    "component_type": "rdk:component:arm",
+                    "component_name": "generated",
+                    "capture_day": datetime.now(timezone.utc).date().isoformat()
+                }
+                
+                poses.append(pose_data)
+                pose_count += 1
+                
+                height_above = z - max_mm[2]
+                print(f"  ✓ Pose {pose_count}: [{x:.1f}, {y:.1f}, {z:.1f}] mm ({height_above:.0f}mm above mesh, distance: {distance:.1f} mm)")
+    
+    # Add extra high pose at maximum Y reach (if requested)
+    if num_high_extra > 0:
+        z = z_layers[2]
+        # Calculate maximum Y at this Z while staying within MAX_REACH
+        # Using: distance^2 = x^2 + y^2 + z^2, with x=0
+        max_y_at_high_z = np.sqrt(MAX_REACH**2 - z**2)
+        
+        x = 0.0
+        y = max_y_at_high_z
+        pose_pos = np.array([x, y, z])
+        distance = np.linalg.norm(pose_pos - arm_base)
+        
+        # Check collision with obstacles
+        collides, obstacle_label = check_collision_with_obstacles(
+            pose_pos, args.ee_z, args.ee_x, args.ee_y, args.ee_clearance, obstacles
+        )
+        
+        if not collides and distance <= MAX_REACH:
+            o_x = 0.0
+            o_y = 0.0
+            o_z = -1.0
+            theta = 90.0
+            
+            pose_data = {
+                "data": {
+                    "pose": {
+                        "x": float(x),
+                        "y": float(y),
+                        "z": float(z),
+                        "o_x": o_x,
+                        "o_y": o_y,
+                        "o_z": o_z,
+                        "theta": theta
+                    }
+                },
+                "tags": None,
+                "additional_parameters": {},
+                "method_name": "EndPosition",
+                "organization_id": "generated",
+                "time_requested": datetime.now(timezone.utc).isoformat(),
+                "time_received": datetime.now(timezone.utc).isoformat(),
+                "location_id": "generated",
+                "robot_id": "generated",
+                "part_id": "generated",
+                "component_type": "rdk:component:arm",
+                "component_name": "generated",
+                "capture_day": datetime.now(timezone.utc).date().isoformat()
+            }
+            
+            poses.append(pose_data)
+            pose_count += 1
+            
+            height_above = z - max_mm[2]
+            print(f"  ✓ Pose {pose_count} (far reach): [{x:.1f}, {y:.1f}, {z:.1f}] mm ({height_above:.0f}mm above mesh, distance: {distance:.1f} mm)")
+        else:
+            if collides:
+                rejected_by_obstacle += 1
+                print(f"  ✗ Skipped far pose (obstacle): [{x:.1f}, {y:.1f}, {z:.1f}] mm - Collision with {obstacle_label}")
+            else:
+                rejected_count += 1
+                print(f"  ✗ Skipped far pose (reach): [{x:.1f}, {y:.1f}, {z:.1f}] mm - Distance {distance:.1f} mm > {MAX_REACH} mm")
 
+    # Add 4 fully extended poses at maximum reach (left, up, right, forward)
+    if num_poses_requested > 13:
+        print(f"\nGenerating fully extended poses at maximum reach:")
+        extended_poses = [
+            (-MAX_REACH, 0.0, 0.0, "left"),    # Fully extended to the left
+            (0.0, 0.0, MAX_REACH, "up"),       # Fully extended upward
+            (MAX_REACH, 0.0, 0.0, "right"),    # Fully extended to the right
+            (0.0, MAX_REACH, 0.0, "forward")   # Fully extended forward
+        ]
+        
+        for x, y, z, direction in extended_poses:
+            pose_pos = np.array([x, y, z])
+            distance = np.linalg.norm(pose_pos - arm_base)
+            
+            # Default orientation: pointing down (-Z direction)
+            o_x = 0.0
+            o_y = 0.0
+            o_z = -1.0
+            theta = 90.0
+            
+            pose_data = {
+                "data": {
+                    "pose": {
+                        "x": float(x),
+                        "y": float(y),
+                        "z": float(z),
+                        "o_x": o_x,
+                        "o_y": o_y,
+                        "o_z": o_z,
+                        "theta": theta
+                    }
+                },
+                "tags": None,
+                "additional_parameters": {},
+                "method_name": "EndPosition",
+                "organization_id": "generated",
+                "time_requested": datetime.now(timezone.utc).isoformat(),
+                "time_received": datetime.now(timezone.utc).isoformat(),
+                "location_id": "generated",
+                "robot_id": "generated",
+                "part_id": "generated",
+                "component_type": "rdk:component:arm",
+                "component_name": "generated",
+                "capture_day": datetime.now(timezone.utc).date().isoformat()
+            }
+            
+            poses.append(pose_data)
+            pose_count += 1
+            
+            print(f"  ✓ Pose {pose_count} ({direction}): [{x:.1f}, {y:.1f}, {z:.1f}] mm (distance: {distance:.1f} mm)")
     
     # Save to JSON file
     output_file = args.output
