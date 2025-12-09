@@ -415,6 +415,76 @@ async def main_async():
     with open(results_file, 'w') as f:
         json.dump(results_data, f, indent=2)
     print(f"Results saved to: {results_file}")
+    
+    # Regenerate visualization with results
+    print("\nRegenerating visualization with execution results...")
+    poses_dir = Path(args.poses_file).parent
+    visualization_html = poses_dir / "visualization.html"
+    
+    if visualization_html.exists():
+        # Find the corresponding files
+        obstacles_file = poses_dir / "obstacles.json"
+        mesh_file = None
+        
+        # Look for mesh file (try common names)
+        for mesh_name in ['dry_run_mesh.ply', 'mesh.ply', poses_dir.name + '.ply']:
+            candidate = poses_dir / mesh_name
+            if candidate.exists():
+                mesh_file = candidate
+                break
+        
+        if mesh_file:
+            # Build command to regenerate visualization
+            regen_cmd = [
+                'python3', 
+                str(Path(__file__).parent / 'display_poses_html.py'),
+                str(args.poses_file),
+                '--mesh', str(mesh_file),
+                '--results', str(results_file)
+            ]
+            
+            if obstacles_file.exists():
+                regen_cmd.extend(['--obstacles', str(obstacles_file)])
+            
+            # Load visualization metadata if available to get original parameters
+            viz_metadata_file = poses_dir / "visualization_metadata.json"
+            if viz_metadata_file.exists():
+                try:
+                    with open(viz_metadata_file, 'r') as f:
+                        viz_metadata = json.load(f)
+                    
+                    # Add parameters from metadata
+                    if 'reach' in viz_metadata:
+                        regen_cmd.extend(['--reach', str(viz_metadata['reach'])])
+                    if 'ee_x' in viz_metadata:
+                        regen_cmd.extend(['--ee-x', str(viz_metadata['ee_x'])])
+                    if 'ee_y' in viz_metadata:
+                        regen_cmd.extend(['--ee-y', str(viz_metadata['ee_y'])])
+                    if 'ee_z' in viz_metadata:
+                        regen_cmd.extend(['--ee-z', str(viz_metadata['ee_z'])])
+                    if 'arm_base_x' in viz_metadata:
+                        regen_cmd.extend(['--arm-base-x', str(viz_metadata['arm_base_x'])])
+                    if 'arm_base_y' in viz_metadata:
+                        regen_cmd.extend(['--arm-base-y', str(viz_metadata['arm_base_y'])])
+                    if 'arm_base_z' in viz_metadata:
+                        regen_cmd.extend(['--arm-base-z', str(viz_metadata['arm_base_z'])])
+                    
+                    print(f"✓ Loaded visualization parameters from metadata")
+                except Exception as e:
+                    print(f"⚠ Could not load visualization metadata: {e}")
+            
+            # Try to extract parameters from existing files
+            # Read the meta.json or use defaults
+            try:
+                result = subprocess.run(regen_cmd, check=True, capture_output=True, text=True)
+                print(f"✓ Visualization updated: {visualization_html}")
+            except subprocess.CalledProcessError as e:
+                print(f"⚠ Failed to regenerate visualization: {e.stderr}")
+        else:
+            print("⚠ Could not find mesh file to regenerate visualization")
+    else:
+        print(f"⚠ Visualization file not found: {visualization_html}")
+    
     print("=" * 50)
 
 

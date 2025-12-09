@@ -141,7 +141,7 @@ def main():
         elif i in failed_indices:
             color = [255, 0, 0, 255]  # Red for failed
         else:
-            color = [255, 0, 0, 255]  # Default red (no results available)
+            color = [255, 255, 0, 255]  # Yellow for untested
         
         # Add small sphere at position
         sphere = trimesh.creation.icosphere(radius=20)
@@ -244,9 +244,12 @@ def main():
     print(f"Position range - Z: [{positions[:, 2].min():.1f}, {positions[:, 2].max():.1f}]")
     
     # Export to GLB (3D model format that browsers/viewers can open)
-    scene.export('visualization.glb')
+    # Save in the same directory as the poses file
+    poses_dir = Path(args.poses_file).parent
+    output_glb = poses_dir / 'visualization.glb'
+    scene.export(str(output_glb))
     
-    print("\n✅ Saved to visualization.glb")
+    print(f"\n✅ Saved to {output_glb}")
     
     # Generate HTML viewer
     # Embed obstacles data and geometry metadata as JSON in the HTML
@@ -403,7 +406,7 @@ def main():
         </label>
         <label>
             <input type="checkbox" id="filter-untested" checked>
-            Untested (Red)
+            Untested (Yellow)
         </label>
     </div>
     <div id="legend">
@@ -939,11 +942,13 @@ def main():
 </body>
 </html>"""
     
-    with open('visualization.html', 'w') as f:
+    # Save in the same directory as the poses file
+    output_html = poses_dir / 'visualization.html'
+    with open(output_html, 'w') as f:
         f.write(html_content)
     
-    print("✅ Saved to visualization.html")
-    print("\nOpen http://localhost:8000/visualization.html in your browser")
+    print(f"✅ Saved to {output_html}")
+    print(f"\nOpen http://localhost:8000/{output_html.name} in your browser")
     print("(Make sure web server is running: python3 -m http.server 8000)")
 
 if __name__ == "__main__":

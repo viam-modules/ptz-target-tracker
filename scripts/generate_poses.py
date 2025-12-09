@@ -317,11 +317,19 @@ Examples:
     print(f"  Max: [{max_mm[0]:.1f}, {max_mm[1]:.1f}, {max_mm[2]:.1f}]")
     
     # Generate poses ABOVE the mesh with better spatial coverage
-    # Three layers: ee_clearance above mesh top, 600mm, and 1000mm above mesh top
+    # Calculate the maximum possible height while staying within reach
+    # At arm base (x=0, y=0), max Z is simply MAX_REACH
+    max_possible_z = arm_base[2] + MAX_REACH
+    
+    # Three layers: ee_clearance above mesh top, middle unused, and high layer
+    # High layer is halfway between lower layer and maximum possible height
+    lower_z = max_mm[2] + args.ee_clearance
+    high_z = (lower_z + max_possible_z) / 2.0
+    
     z_layers = [
-        max_mm[2] + args.ee_clearance,       # Lower layer: ee_clearance above mesh top (most important)
-        max_mm[2] + 600,                     # Middle layer: 600mm above mesh top
-        max_mm[2] + 1000                     # High layer: 1000mm above mesh top (maximum reach)
+        lower_z,                             # Lower layer: ee_clearance above mesh top (most important)
+        max_mm[2] + 600,                     # Middle layer: 600mm above mesh top (unused)
+        high_z                               # High layer: halfway between lower and max possible height
     ]
     
     print(f"\nGenerating poses ABOVE the mesh:")
@@ -550,9 +558,9 @@ Examples:
     # Generate high layer (if requested)
     if num_high > 0:
         # Use reduced range for high layer to stay within reach
-        # Calculate tighter bounds based on max_xy_radius_high
-        x_high_limit = min(max_xy_radius_high, x_max_gen - x_margin)
-        y_high_limit = min(max_xy_radius_high * 0.7, y_max_gen - y_margin)  # More conservative on Y due to offset
+        # Calculate tighter bounds based on generation_radius_high (already has safe margin applied)
+        x_high_limit = min(generation_radius_high, x_max_gen - x_margin)
+        y_high_limit = min(generation_radius_high, y_max_gen - y_margin)
         x_positions_high = np.linspace(-x_high_limit, x_high_limit, nx_high)
         y_positions_high = np.linspace(y_min_gen + y_margin, y_high_limit, ny_high)
         

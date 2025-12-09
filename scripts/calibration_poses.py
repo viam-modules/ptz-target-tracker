@@ -12,6 +12,8 @@ from datetime import datetime
 import shutil
 import trimesh
 import numpy as np
+import json
+import os
 
 
 def main():
@@ -256,6 +258,21 @@ def main():
     if result.returncode != 0:
         print("\n❌ Failed to generate poses", file=sys.stderr)
         return 1
+    
+    # Save visualization metadata for later use
+    viz_metadata = {
+        "reach": args.reach,
+        "arm_base_x": args.arm_base_x,
+        "arm_base_y": args.arm_base_y,
+        "arm_base_z": args.arm_base_z,
+        "ee_x": args.ee_x,
+        "ee_y": args.ee_y,
+        "ee_z": args.ee_z,
+        "mesh_file": os.path.basename(args.mesh) if not args.dry_run else "dry_run_mesh.ply"
+    }
+    viz_metadata_file = output_dir / "visualization_metadata.json"
+    with open(viz_metadata_file, 'w') as f:
+        json.dump(viz_metadata, f, indent=2)
     
     # Step 2: Generate visualization (unless skipped)
     if not args.skip_visualization:
