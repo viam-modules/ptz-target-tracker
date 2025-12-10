@@ -162,6 +162,34 @@ async def main_async():
         print(f"Error: Path is not a directory: {args.calibration_dir}")
         sys.exit(1)
     
+    # Set up logging to file and terminal
+    log_file = calib_dir / "move_to_poses_log.txt"
+    
+    class TeeLogger:
+        """Write to both file and terminal"""
+        def __init__(self, filename):
+            self.terminal = sys.stdout
+            self.log = open(filename, 'w', encoding='utf-8', buffering=1)  # Line buffering
+        
+        def write(self, message):
+            self.terminal.write(message)
+            self.log.write(message)
+            self.log.flush()
+        
+        def flush(self):
+            self.terminal.flush()
+            self.log.flush()
+        
+        def close(self):
+            self.log.close()
+    
+    # Redirect stdout to both terminal and log file
+    tee = TeeLogger(log_file)
+    old_stdout = sys.stdout
+    sys.stdout = tee
+    
+    print(f"📝 Logging to: {log_file.absolute()}\n")
+    
     # Find poses file in directory
     poses_file = calib_dir / "ee_poses_generated.json"
     if not poses_file.exists():
@@ -506,6 +534,11 @@ async def main_async():
         print(f"⚠ Visualization file not found: {visualization_html}")
     
     print("=" * 50)
+    print(f"📝 Session log saved to: {log_file}")
+    
+    # Close log file and restore stdout
+    sys.stdout = old_stdout
+    tee.close()
 
 
 def main():

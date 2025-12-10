@@ -148,7 +148,7 @@ def main():
         """Write to both file and terminal"""
         def __init__(self, filename):
             self.terminal = sys.stdout
-            self.log = open(filename, 'w', encoding='utf-8')
+            self.log = open(filename, 'w', encoding='utf-8', buffering=1)  # Line buffering
         
         def write(self, message):
             self.terminal.write(message)
