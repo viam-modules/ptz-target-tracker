@@ -284,56 +284,65 @@ async def main_async():
         if i < total_poses - 1 or i > 0:
             print()
             try:
-                if args.record_samples and success:
-                    user_input = input("Press Enter for next pose, 'p' for previous, 's' to save sample, 'd' to delete last sample, or Ctrl+C to stop: ").strip().lower()
-                else:
-                    user_input = input("Press Enter for next pose, 'p' for previous pose, or Ctrl+C to stop: ").strip().lower()
-                
-                if user_input == 's' and args.record_samples and success:
-                    print("\nRecording calibration sample...")
-                    # Need to reconnect to use SDK
-                    robot_temp = await connect_robot(api_key, api_key_id, robot_address)
-                    try:
-                        # Get the tracker service as GenericService
-                        tracker = GenericService.from_robot(robot_temp, tracker_component)
-                        
-                        sample_success, sample_result = await push_sample(tracker)
-                        if sample_success:
-                            print("✓ Sample recorded")
-                            if sample_result:
-                                print(f"  Result: {sample_result}")
-                        else:
-                            print(f"✗ Failed to record sample: {sample_result}")
-                    except Exception as e:
-                        print(f"✗ Failed to access tracker component '{tracker_component}': {e}")
+                # Interactive loop for this pose
+                while True:
+                    if args.record_samples and success:
+                        user_input = input("Press Enter for next pose, 'p' for previous, 's' to save sample, 'd' to delete last sample, or Ctrl+C to stop: ").strip().lower()
+                    else:
+                        user_input = input("Press Enter for next pose, 'p' for previous pose, or Ctrl+C to stop: ").strip().lower()
                     
-                    await robot_temp.close()
-                    print()
-                    # Ask again after recording
-                    user_input = input("Press Enter for next pose, 'p' for previous pose, or Ctrl+C to stop: ").strip().lower()
-                
-                elif user_input == 'd' and args.record_samples:
-                    print("\nDeleting last calibration sample...")
-                    # Need to reconnect to use SDK
-                    robot_temp = await connect_robot(api_key, api_key_id, robot_address)
-                    try:
-                        # Get the tracker service as GenericService
-                        tracker = GenericService.from_robot(robot_temp, tracker_component)
-                        
-                        delete_success, delete_result = await pop_sample(tracker)
-                        if delete_success:
-                            print("✓ Last sample deleted")
-                            if delete_result:
-                                print(f"  Result: {delete_result}")
-                        else:
-                            print(f"✗ Failed to delete sample: {delete_result}")
-                    except Exception as e:
-                        print(f"✗ Failed to access tracker component '{tracker_component}': {e}")
+                    if user_input == 's' and args.record_samples and success:
+                        print("\nRecording calibration sample...")
+                        # Need to reconnect to use SDK
+                        robot_temp = await connect_robot(api_key, api_key_id, robot_address)
+                        try:
+                            # Get the tracker service as GenericService
+                            tracker = GenericService.from_robot(robot_temp, tracker_component)
+                            
+                            sample_success, sample_result = await push_sample(tracker)
+                            if sample_success:
+                                print("✓ Sample recorded")
+                                if sample_result:
+                                    print(f"  Result: {sample_result}")
+                                print()
+                                # Successfully saved, break the loop to continue
+                                break
+                            else:
+                                print(f"✗ Failed to record sample: {sample_result}")
+                                print()
+                                # Stay in loop to allow retry
+                        except Exception as e:
+                            print(f"✗ Failed to access tracker component '{tracker_component}': {e}")
+                            print()
+                            # Stay in loop to allow retry
+                        finally:
+                            await robot_temp.close()
                     
-                    await robot_temp.close()
-                    print()
-                    # Ask again after deleting
-                    user_input = input("Press Enter for next pose, 'p' for previous pose, or Ctrl+C to stop: ").strip().lower()
+                    elif user_input == 'd' and args.record_samples:
+                        print("\nDeleting last calibration sample...")
+                        # Need to reconnect to use SDK
+                        robot_temp = await connect_robot(api_key, api_key_id, robot_address)
+                        try:
+                            # Get the tracker service as GenericService
+                            tracker = GenericService.from_robot(robot_temp, tracker_component)
+                            
+                            delete_success, delete_result = await pop_sample(tracker)
+                            if delete_success:
+                                print("✓ Last sample deleted")
+                                if delete_result:
+                                    print(f"  Result: {delete_result}")
+                            else:
+                                print(f"✗ Failed to delete sample: {delete_result}")
+                        except Exception as e:
+                            print(f"✗ Failed to access tracker component '{tracker_component}': {e}")
+                        finally:
+                            await robot_temp.close()
+                        print()
+                        # Stay in loop to ask again
+                    
+                    else:
+                        # Not 's' or 'd', break the loop
+                        break
                 
                 if user_input == 'p' and i > 0:
                     i -= 1
