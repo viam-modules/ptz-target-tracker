@@ -30,8 +30,7 @@ from viam.services.generic import Generic as GenericService
 
         
         
-DEFAULT_VELOCITY_NORMAL = 10
-DEFAULT_VELOCITY_SLOW = 10
+# DEFAULT_VELOCITY_NORMAL = 30
 
 async def connect_robot(api_key: str, api_key_id: str, robot_address: str):
     """Connect to the robot."""
@@ -246,19 +245,19 @@ async def main_async():
         print(f"Current arm speed: {original_speed}%")
     
     # Set slow speed
-    print(f"Setting arm speed to {DEFAULT_VELOCITY_NORMAL}%...")
-    if await set_arm_speed(arm, DEFAULT_VELOCITY_NORMAL):
-        print("✓ Speed set")
-    else:
-        print("⚠ Arm does not support speed control via SDK")
-        print("  You may need to configure speed limits in your robot config")
-        print("  or manually set speed on the arm controller")
-        print()
-        response = input("Continue anyway? [y/N]: ")
-        if response.lower() != 'y':
-            print("Aborted.")
-            await robot.close()
-            sys.exit(0)
+    # print(f"Setting arm speed to {DEFAULT_VELOCITY_NORMAL}%...")
+    # if await set_arm_speed(arm, DEFAULT_VELOCITY_NORMAL):
+    #     print("✓ Speed set")
+    # else:
+    #     print("⚠ Arm does not support speed control via SDK")
+    #     print("  You may need to configure speed limits in your robot config")
+    #     print("  or manually set speed on the arm controller")
+    #     print()
+    #     response = input("Continue anyway? [y/N]: ")
+    #     if response.lower() != 'y':
+    #         print("Aborted.")
+    #         await robot.close()
+    #         sys.exit(0)
     
     # Close connection (CLI will handle moves)
     await robot.close()
@@ -474,12 +473,38 @@ async def main_async():
         obstacles_file = calib_dir / "obstacles.json"
         mesh_file = None
         
-        # Look for mesh file (try common names)
-        for mesh_name in ['dry_run_mesh.ply', 'mesh.ply', calib_dir.name + '.ply']:
-            candidate = calib_dir / mesh_name
+        # Load visualization metadata if available to get original parameters and mesh filename
+        viz_metadata = {}
+        viz_metadata_file = calib_dir / "visualization_metadata.json"
+        if viz_metadata_file.exists():
+            try:
+                with open(viz_metadata_file, 'r') as f:
+                    viz_metadata = json.load(f)
+                print(f"✓ Loaded visualization parameters from metadata")
+            except Exception as e:
+                print(f"⚠ Could not load visualization metadata: {e}")
+        
+        # Look for mesh file
+        # 1. From metadata
+        if 'mesh_file' in viz_metadata:
+            candidate = calib_dir / viz_metadata['mesh_file']
             if candidate.exists():
                 mesh_file = candidate
-                break
+        
+        # 2. Try common names if not found
+        if not mesh_file:
+            for mesh_name in ['dry_run_mesh.ply', 'mesh.ply', calib_dir.name + '.ply']:
+                candidate = calib_dir / mesh_name
+                if candidate.exists():
+                    mesh_file = candidate
+                    break
+        
+        # 3. Last resort: search for ANY .ply file
+        if not mesh_file:
+            ply_files = list(calib_dir.glob("*.ply"))
+            if ply_files:
+                mesh_file = ply_files[0]
+                print(f"ℹ Using found mesh file: {mesh_file.name}")
         
         if mesh_file:
             # Build command to regenerate visualization
@@ -494,32 +519,21 @@ async def main_async():
             if obstacles_file.exists():
                 regen_cmd.extend(['--obstacles', str(obstacles_file)])
             
-            # Load visualization metadata if available to get original parameters
-            viz_metadata_file = calib_dir / "visualization_metadata.json"
-            if viz_metadata_file.exists():
-                try:
-                    with open(viz_metadata_file, 'r') as f:
-                        viz_metadata = json.load(f)
-                    
-                    # Add parameters from metadata
-                    if 'reach' in viz_metadata:
-                        regen_cmd.extend(['--reach', str(viz_metadata['reach'])])
-                    if 'ee_x' in viz_metadata:
-                        regen_cmd.extend(['--ee-x', str(viz_metadata['ee_x'])])
-                    if 'ee_y' in viz_metadata:
-                        regen_cmd.extend(['--ee-y', str(viz_metadata['ee_y'])])
-                    if 'ee_z' in viz_metadata:
-                        regen_cmd.extend(['--ee-z', str(viz_metadata['ee_z'])])
-                    if 'arm_base_x' in viz_metadata:
-                        regen_cmd.extend(['--arm-base-x', str(viz_metadata['arm_base_x'])])
-                    if 'arm_base_y' in viz_metadata:
-                        regen_cmd.extend(['--arm-base-y', str(viz_metadata['arm_base_y'])])
-                    if 'arm_base_z' in viz_metadata:
-                        regen_cmd.extend(['--arm-base-z', str(viz_metadata['arm_base_z'])])
-                    
-                    print(f"✓ Loaded visualization parameters from metadata")
-                except Exception as e:
-                    print(f"⚠ Could not load visualization metadata: {e}")
+            # Add parameters from metadata
+            if 'reach' in viz_metadata:
+                regen_cmd.extend(['--reach', str(viz_metadata['reach'])])
+            if 'ee_x' in viz_metadata:
+                regen_cmd.extend(['--ee-x', str(viz_metadata['ee_x'])])
+            if 'ee_y' in viz_metadata:
+                regen_cmd.extend(['--ee-y', str(viz_metadata['ee_y'])])
+            if 'ee_z' in viz_metadata:
+                regen_cmd.extend(['--ee-z', str(viz_metadata['ee_z'])])
+            if 'arm_base_x' in viz_metadata:
+                regen_cmd.extend(['--arm-base-x', str(viz_metadata['arm_base_x'])])
+            if 'arm_base_y' in viz_metadata:
+                regen_cmd.extend(['--arm-base-y', str(viz_metadata['arm_base_y'])])
+            if 'arm_base_z' in viz_metadata:
+                regen_cmd.extend(['--arm-base-z', str(viz_metadata['arm_base_z'])])
             
             # Try to extract parameters from existing files
             # Read the meta.json or use defaults
@@ -530,6 +544,7 @@ async def main_async():
                 print(f"⚠ Failed to regenerate visualization: {e.stderr}")
         else:
             print("⚠ Could not find mesh file to regenerate visualization")
+
     else:
         print(f"⚠ Visualization file not found: {visualization_html}")
     
