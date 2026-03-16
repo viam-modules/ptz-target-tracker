@@ -4,6 +4,7 @@ import numpy as np
 import argparse
 import sys
 from pathlib import Path
+import base64
 
 def main():
     parser = argparse.ArgumentParser(description='Generate 3D visualization of poses')
@@ -251,6 +252,12 @@ def main():
     
     print(f"\n✅ Saved to {output_glb}")
     
+    # Read the GLB file and encode to base64 for embedding
+    with open(output_glb, "rb") as f:
+        glb_bytes = f.read()
+        glb_base64 = base64.b64encode(glb_bytes).decode('utf-8')
+
+    
     # Generate HTML viewer
     # Embed obstacles data and geometry metadata as JSON in the HTML
     obstacles_json = json.dumps(obstacles_data)
@@ -440,6 +447,7 @@ def main():
 
         const obstaclesData = {obstacles_json};
         const geometryMetadata = {metadata_json};
+        const glbBase64 = "{glb_base64}";
         
         let scene, camera, renderer, controls;
         let raycaster, mouse, tooltip;
@@ -492,8 +500,19 @@ def main():
             light3.position.set(1000, -1000, 1000);
             scene.add(light3);
             
+            
             const loader = new GLTFLoader();
-            loader.load('visualization.glb', function(gltf) {{
+            
+            // Decode base64 to ArrayBuffer
+            const binaryString = window.atob(glbBase64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {{
+                bytes[i] = binaryString.charCodeAt(i);
+            }}
+            const glbData = bytes.buffer;
+            
+            loader.parse(glbData, '', function(gltf) {{
                 gltf.scene.traverse(function(child) {{
                     if (child.isMesh) {{
                         child.material.side = THREE.DoubleSide;
