@@ -570,67 +570,46 @@ func (t *componentTracker) fitPolynomial() (panError, tiltError float64, err err
 	return panError, tiltError, nil
 }
 
-func solveLinearSystem10x10(A [10][10]float64, b [10]float64) [10]float64 {
-	// Convert to gonum matrices
-	aData := make([]float64, 100)
-	for i := 0; i < 10; i++ {
-		for j := 0; j < 10; j++ {
-			aData[i*10+j] = A[i][j]
-		}
-	}
-
-	bData := make([]float64, 10)
-	copy(bData, b[:])
-
-	aMat := mat.NewDense(10, 10, aData)
-	bMat := mat.NewDense(10, 1, bData)
-
-	// Solve using QR decomposition
-	var qr mat.QR
-	qr.Factorize(aMat)
-
-	var result mat.Dense
-	err := qr.SolveTo(&result, false, bMat)
-	if err != nil {
-		// Return zeros if singular
-		return [10]float64{}
-	}
-
-	// Extract coefficients
-	var coeffs [10]float64
-	for i := 0; i < 10; i++ {
-		coeffs[i] = result.At(i, 0)
-	}
-
-	return coeffs
-}
 
 func (t *componentTracker) fitPolynomialSingle(getValue func(TrackingSample) float64) []float64 {
 	// Features: [x², y², z², xy, xz, yz, x, y, z, 1]
-	// Build normal equations
-	var XtX [10][10]float64
-	var XtY [10]float64
+	// Build the full n×10 design matrix and solve via QR directly.
+	// Using normal equations (XᵀX) squares the condition number, which causes
+	// catastrophic cancellation when feature values are large (e.g. x²~10⁶).
+	n := len(t.samples)
+	xData := make([]float64, n*10)
+	yData := make([]float64, n)
 
-	for _, s := range t.samples {
+	for i, s := range t.samples {
 		x, y, z := s.TargetPos.X, s.TargetPos.Y, s.TargetPos.Z
 		features := [10]float64{
 			x * x, y * y, z * z,
 			x * y, x * z, y * z,
 			x, y, z, 1,
 		}
-		val := getValue(s)
-
-		for i := 0; i < 10; i++ {
-			XtY[i] += features[i] * val
-			for j := 0; j < 10; j++ {
-				XtX[i][j] += features[i] * features[j]
-			}
+		for j := 0; j < 10; j++ {
+			xData[i*10+j] = features[j]
 		}
+		yData[i] = getValue(s)
 	}
 
-	coeffs := solveLinearSystem10x10(XtX, XtY)
-	// Convert array to slice
-	return coeffs[:]
+	xMat := mat.NewDense(n, 10, xData)
+	yMat := mat.NewDense(n, 1, yData)
+
+	var qr mat.QR
+	qr.Factorize(xMat)
+
+	var result mat.Dense
+	if err := qr.SolveTo(&result, false, yMat); err != nil {
+		t.logger.Errorf("fitPolynomialSingle: QR solve failed: %v", err)
+		return make([]float64, 10)
+	}
+
+	coeffs := make([]float64, 10)
+	for i := 0; i < 10; i++ {
+		coeffs[i] = result.At(i, 0)
+	}
+	return coeffs
 }
 
 func (t *componentTracker) calculatePanTiltPolynomial(pos r3.Vector) (pan, tilt float64, err error) {

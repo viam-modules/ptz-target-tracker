@@ -41,16 +41,6 @@ async def connect_robot(api_key: str, api_key_id: str, robot_address: str):
     return await RobotClient.at_address(robot_address, opts)
 
 
-async def set_arm_speed(arm: Arm, speed_percent: float):
-    """Set arm speed via DoCommand."""
-    try:
-        await arm.do_command({"set_vel": speed_percent})
-        return True
-    except Exception as e:
-        print(f"Error setting arm speed: {e}")
-        return False
-
-
 async def get_arm_speed(arm: Arm):
     """Get current arm speed setting."""
     try:
@@ -230,7 +220,6 @@ async def main_async():
     total_poses = len(poses)
     print(f"Found {total_poses} poses in {poses_file}")
     print(f"Component: {component}")
-    print(f"Target speed: {DEFAULT_VELOCITY_NORMAL}%")
     print()
     
     # Connect to robot
@@ -243,21 +232,6 @@ async def main_async():
     original_speed = await get_arm_speed(arm)
     if original_speed:
         print(f"Current arm speed: {original_speed}%")
-    
-    # Set slow speed
-    # print(f"Setting arm speed to {DEFAULT_VELOCITY_NORMAL}%...")
-    # if await set_arm_speed(arm, DEFAULT_VELOCITY_NORMAL):
-    #     print("✓ Speed set")
-    # else:
-    #     print("⚠ Arm does not support speed control via SDK")
-    #     print("  You may need to configure speed limits in your robot config")
-    #     print("  or manually set speed on the arm controller")
-    #     print()
-    #     response = input("Continue anyway? [y/N]: ")
-    #     if response.lower() != 'y':
-    #         print("Aborted.")
-    #         await robot.close()
-    #         sys.exit(0)
     
     # Close connection (CLI will handle moves)
     await robot.close()
@@ -386,13 +360,8 @@ async def main_async():
     
     # Restore original speed and get calibration samples
     print()
-    print("Restoring original arm speed...")
     robot = await connect_robot(api_key, api_key_id, robot_address)
     arm = Arm.from_robot(robot, component)
-    
-    if original_speed:
-        await set_arm_speed(arm, original_speed)
-        print(f"✓ Speed restored to {original_speed}%")
     
     # Get calibration samples if recording was enabled
     if args.record_samples:
