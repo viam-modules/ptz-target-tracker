@@ -171,6 +171,10 @@ func (s *componentTracker) Close(ctx context.Context) error {
 	return nil
 }
 
+func (s *componentTracker) Status(ctx context.Context) (map[string]interface{}, error) {
+	return map[string]interface{}{}, nil
+}
+
 func newComponentTracker(ctx context.Context, deps resource.Dependencies, rawConf resource.Config, logger logging.Logger) (resource.Resource, error) {
 	conf, err := resource.NativeConfig[*Config](rawConf)
 	if err != nil {
