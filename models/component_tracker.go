@@ -138,6 +138,7 @@ const maxZoomValue = 1.0
 
 type componentTracker struct {
 	resource.AlwaysRebuild
+	resource.Named
 	name resource.Name
 
 	logger logging.Logger
