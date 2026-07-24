@@ -1,0 +1,57 @@
+name: Test
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint_and_test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: make setup
+        run: make setup
+
+      # `make setup` is `go mod tidy`; fail if that leaves go.mod/go.sum dirty.
+      - name: Verify go.mod and go.sum are tidy
+        run: |
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo '::error::make setup (go mod tidy) changed go.mod/go.sum. Run `make setup` and commit the result.'
+            exit 1
+          fi
+
+      # `make lint` is `gofmt -s -w .`, which rewrites files in place rather than
+      # reporting, so check for a dirty tree instead of a non-zero exit code.
+      - name: make lint
+        run: make lint
+
+      - name: Verify no uncommitted changes from make lint
+        run: |
+          if ! git diff --exit-code; then
+            echo '::error::make lint reformatted files. Run `make lint` and commit the result.'
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: make test
+        run: make test
