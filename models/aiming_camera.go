@@ -1,17 +1,15 @@
 package models
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
-	"image/jpeg"
-	"image/png"
 
 	"go.viam.com/rdk/components/camera"
+	"go.viam.com/rdk/data"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/pointcloud"
 	"go.viam.com/rdk/resource"
@@ -49,6 +47,8 @@ func (cfg *AimingCameraConfig) Validate(path string) ([]string, []string, error)
 type aimingCamera struct {
 	resource.TriviallyCloseable
 	resource.TriviallyReconfigurable
+	resource.Named
+
 	name           resource.Name
 	logger         logging.Logger
 	cfg            *AimingCameraConfig
@@ -118,51 +118,6 @@ func (s *aimingCamera) Geometries(ctx context.Context, extra map[string]interfac
 	return geometry, nil
 }
 
-func (s *aimingCamera) Image(ctx context.Context, mimeType string, extra map[string]interface{}) ([]byte, camera.ImageMetadata, error) {
-	// Get images from underlying camera
-	filterSourceNames := []string{}
-	imgs, _, err := s.Images(ctx, filterSourceNames, extra)
-	if len(imgs) == 0 {
-		return nil, camera.ImageMetadata{}, fmt.Errorf("No images returned from underlying camera")
-	}
-	if len(imgs) > 1 {
-		s.logger.Warnf("Multiple images returned from underlying camera, only the first will be processed")
-	}
-
-	img, err := imgs[0].Bytes(ctx)
-	if err != nil {
-		return nil, camera.ImageMetadata{}, fmt.Errorf("error when getting bytes from named image: %w", err)
-	}
-
-	// Decode image
-	decodedImg, _, err := image.Decode(bytes.NewReader(img))
-	if err != nil {
-		return nil, camera.ImageMetadata{}, fmt.Errorf("error when decoding image: %w", err)
-	}
-
-	// Draw crosshair on it
-	imgWithCrosshair := s.drawCrosshair(decodedImg)
-
-	// Encode back to []byte
-	var buf bytes.Buffer
-	switch mimeType {
-	case utils.MimeTypePNG:
-		err = png.Encode(&buf, imgWithCrosshair)
-	default:
-		// Default to JPEG for unknown types or explicit JPEG request
-		err = jpeg.Encode(&buf, imgWithCrosshair, nil)
-	}
-	if err != nil {
-		return nil, camera.ImageMetadata{}, fmt.Errorf("error when encoding image with crosshair: %w", err)
-	}
-
-	outputMetadata := camera.ImageMetadata{
-		MimeType: mimeType,
-	}
-
-	return buf.Bytes(), outputMetadata, nil
-}
-
 func isImageMimeTypeSupported(mimeType string) bool {
 	switch mimeType {
 	case utils.MimeTypeJPEG, utils.MimeTypePNG, utils.MimeTypeRawRGBA, "":
@@ -194,7 +149,7 @@ func (s *aimingCamera) Images(ctx context.Context, filterSourceNames []string, e
 		imgWithCrosshair := s.drawCrosshair(img)
 
 		// Create new NamedImage
-		resultImg, err := camera.NamedImageFromImage(imgWithCrosshair, namedImg.SourceName, namedImg.MimeType())
+		resultImg, err := camera.NamedImageFromImage(imgWithCrosshair, namedImg.SourceName, namedImg.MimeType(), data.Annotations{})
 		if err != nil {
 			return nil, resource.ResponseMetadata{}, fmt.Errorf("error when creating named image from image with crosshair: %w", err)
 		}
