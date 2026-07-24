@@ -56,11 +56,3 @@ jobs:
         run: make build
         env:
           VIAM_TARGET_OS: ${{ matrix.target_os }}
-
-      - name: Upload module binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ptz-target-tracker-${{ matrix.label }}
-          path: bin/ptz-target-tracker*
-          if-no-files-found: error
-          retention-days: 7
