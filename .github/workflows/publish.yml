@@ -1,7 +1,6 @@
 name: Publish Module
 
-# There is deliberately no `push` trigger: main moves without minting registry
-# versions, and a release is the only thing that publishes one.
+# We create new Viam module versions on Github releases.
 on:
   release:
     types: [published]
@@ -22,9 +21,6 @@ jobs:
       # actions/checkout@v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # There is no build matrix here because there is no build here: the action
-      # hands off to Viam's cloud builders, which read the target platforms from
-      # the `build` block in meta.json.
       # viamrobotics/build-action@v1.7.3
       - uses: viamrobotics/build-action@b885e11b378e05476ee0109c9fc8ecb387b508e2
         with:
