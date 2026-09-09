@@ -4,8 +4,8 @@ go 1.25.10
 
 require (
 	github.com/golang/geo v0.0.0-20230421003525-6adc56603217
-	go.viam.com/rdk v1.1.0
-	go.viam.com/utils v0.8.1
+	go.viam.com/rdk v1.2.0
+	go.viam.com/utils v0.10.1
 	gonum.org/v1/gonum v0.17.0
 )
 
