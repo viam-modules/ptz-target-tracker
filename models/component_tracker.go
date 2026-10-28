@@ -485,9 +485,9 @@ func (t *componentTracker) getCameraCurrentPTZStatus(ctx context.Context) (PTZVa
 
 func (t *componentTracker) trackingLoop(ctx context.Context) {
 	t.logger.Info("Starting tracking loop")
-	t.logger.Info("Update rate: %f Hz", t.cfg.UpdateRateHz)
+	t.logger.Infof("Update rate: %f Hz", t.cfg.UpdateRateHz)
 	var updateInterval time.Duration = time.Duration(1.0 / t.cfg.UpdateRateHz * float64(time.Second))
-	t.logger.Info("Update interval: %v", updateInterval)
+	t.logger.Infof("Update interval: %v", updateInterval)
 	ticker := time.NewTicker(updateInterval)
 	defer ticker.Stop()
 
